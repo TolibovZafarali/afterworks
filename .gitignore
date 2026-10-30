@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+DerivedData/
+artifacts/*
+!artifacts/verification.md
+!artifacts/screenshots/
+!artifacts/screenshots/**
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+__pycache__/
