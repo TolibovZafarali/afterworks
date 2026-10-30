@@ -7,44 +7,55 @@ enum BuildTool: Equatable {
 }
 
 enum GameSheet: String, Identifiable {
-    case menu, guide, tiles, inspection, result
+    case menu, guide, tiles, inspection, result, levels
     var id: String { rawValue }
+}
+
+struct LevelResult {
+    var stars: Int
+    var coinsSpent: Int
 }
 
 @MainActor
 final class GameController: ObservableObject {
-    @Published var journey: Journey?
+    @Published var campaign: Campaign = .new
     @Published var settings = PlayerSettings()
     @Published var isPlaying = false
-    @Published var preview = false
-    @Published var tool: BuildTool = .piece(.quarry)
-    @Published var message = "Choose a quarry, then tap a pale stone tile."
+    @Published var tool: BuildTool = .piece(.orchard)
+    @Published var message = "A little road can go a long way."
     @Published var messageIsError = false
     @Published var sheet: GameSheet?
     @Published var inspected: Position?
     @Published var hovered: Position?
     @Published var isAnimating = false
     @Published var saveError: String?
-    @Published var transitionTitle: String?
+    @Published var migrationNotice: String?
+    @Published private(set) var hasUnreadableSave = false
     var reduceMotion = false
     let scene = BoardScene(size: CGSize(width: 390, height: 390))
-    private let store: JourneyStore
+    private let store: CampaignStore
     private let feedback = Feedback()
     private var animationTask: Task<Void, Never>?
-    private(set) var hasUnreadableSave = false
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
         let testing = arguments.contains("--uitesting")
-        store = JourneyStore(testing: testing)
-        if testing && arguments.contains("--reset-journey") { try? store.resetTestingData() }
+        store = CampaignStore(testing: testing)
+        if testing && (arguments.contains("--reset-progress") || arguments.contains("--reset-journey")) {
+            try? store.resetTestingData()
+        }
         do {
-            if let saved = try store.load() {
-                journey = saved.journey
-                settings = saved.settings
+            if let loaded = try store.load() {
+                campaign = loaded.save.campaign
+                settings = loaded.save.settings
+                if loaded.importedSettings {
+                    migrationNotice = "A fresh set of 12 puzzles. Your earlier island save is preserved."
+                    do { try store.save(loaded.save) }
+                    catch { saveError = "Could not save the new campaign: \(error.localizedDescription)" }
+                }
             }
         } catch {
-            saveError = error.localizedDescription
+            saveError = "Could not open your progress. \(error.localizedDescription)"
             hasUnreadableSave = true
         }
         scene.onTap = { [weak self] point in self?.tap(Position(row: point.row, col: point.col)) }
@@ -56,71 +67,71 @@ final class GameController: ObservableObject {
         }
     }
 
-    var state: GameState { journey?.current ?? Journey.new.current }
-    var scenario: Scenario { Balance.scenarios[state.eraIndex] }
+    var state: GameState { campaign.current }
+    var level: LevelDefinition { state.level }
     var liveEvaluation: Evaluation { Rules.evaluate(state) }
     var selectedPiece: Piece? { if case let .piece(piece) = tool { return piece }; return nil }
-    var hasJourney: Bool { journey != nil || hasUnreadableSave }
-    var canAdvance: Bool { state.canAdvance && !isAnimating && !preview }
-    var displayedBoard: Board { preview ? Rules.transformedBoard(state) : state.board }
+    var totalStars: Int { campaign.totalStars }
+    var canAdvance: Bool { state.canAdvance && state.levelIndex < Balance.levels.count - 1 && !isAnimating }
+    var currentResult: LevelResult? {
+        guard state.canAdvance else { return nil }
+        return LevelResult(stars: level.stars(forSpent: state.spentCoins), coinsSpent: state.spentCoins)
+    }
+    var hasProgress: Bool { !campaign.records.isEmpty || !campaign.undoHistory.isEmpty || state.evaluation != nil }
+    func isUnlocked(_ index: Int) -> Bool { !hasUnreadableSave && index <= campaign.highestUnlockedIndex }
+    func bestStars(for index: Int) -> Int { campaign.record(for: index)?.stars ?? 0 }
+    func bestCoins(for index: Int) -> Int? { campaign.record(for: index)?.spentCoins }
 
-    func begin() {
-        animationTask?.cancel()
-        scene.cancelTransientAnimations()
-        journey = .new
-        hasUnreadableSave = false
-        isPlaying = true
-        preview = false
-        isAnimating = false
-        transitionTitle = nil
-        tool = .piece(.quarry)
-        message = "Choose a quarry, then tap a pale stone tile."
-        messageIsError = false
-        sheet = nil
-        persist()
-        render()
+    func begin() { startLevel(0) }
+
+    func startLevel(_ index: Int) {
+        guard !hasUnreadableSave else { fail("Your progress file needs recovery before playing."); return }
+        var next = campaign
+        do {
+            try next.startLevel(index)
+            restore(next, message: Balance.levels[index].hint)
+            isPlaying = true
+        } catch { fail(error.localizedDescription) }
     }
 
     func resume() {
-        guard journey != nil else { return }
+        guard !hasUnreadableSave else { return }
+        cancelAnimation()
         isPlaying = true
-        preview = false
-        tool = .inspect
-        message = journey?.finished == true ? "Three eras. One island shaped by you." : "Your island is just as you left it."
+        tool = campaign.undoHistory.isEmpty ? .piece(firstProducer) : .inspect
+        message = campaign.undoHistory.isEmpty ? level.hint : "Your plan is just as you left it."
+        messageIsError = false
         render()
-        if journey?.finished == true { sheet = .result }
+        if currentResult != nil { sheet = .result }
     }
+
+    private var firstProducer: Piece { level.availablePieces.first(where: { !$0.isInfrastructure }) ?? .road }
 
     func select(_ selection: BuildTool) {
         guard !isAnimating else { return }
-        if preview && selection != .inspect { togglePreview() }
         tool = selection
         messageIsError = false
         switch selection {
         case let .piece(piece):
             switch piece {
-            case .field: message = "Beside lake or on wetland. 3 food; +2 on wetland or within 2 steps of a connected reservoir."
-            case .reservoir: message = "Beside a lake. Connect for +2 food to fields within 2 orthogonal steps."
+            case .field: message = "Beside water or on wetland. 3 food; +2 on wetland or within 2 steps of a connected reservoir."
+            case .reservoir: message = "Beside water. Connect by road for +2 food to fields within 2 orthogonal steps."
             default: message = Balance.definition(for: piece).rule
             }
-        case .inspect: message = preview ? "Tap a tile to compare its present and future." : "Tap a tile to see its output, route, and future."
-        case .remove: message = "New pieces refund their cost. Removing an old route costs 1."
-        case .clear: message = "Clear woodland for \(Balance.clearingCost) construction. No timber is gained."
+        case .inspect: message = "Tap a tile to see its output and road connection."
+        case .remove: message = "Remove a piece for a full coin refund. Your best stars stay saved."
+        case .clear: message = "Clear woodland for \(Balance.clearingCost) gold coins. No timber is gained."
         }
         render()
     }
 
     func tap(_ position: Position) {
-        guard !isAnimating, journey?.finished != true else {
-            if journey?.finished == true { inspect(position) }
-            return
-        }
-        if preview || tool == .inspect { inspect(position); return }
+        guard !isAnimating else { return }
         switch tool {
         case let .piece(piece): perform(.place(piece, position))
         case .remove: perform(.remove(position))
         case .clear: perform(.clearWoodland(position))
-        case .inspect: break
+        case .inspect: inspect(position)
         }
     }
 
@@ -131,29 +142,25 @@ final class GameController: ObservableObject {
     }
 
     func perform(_ action: GameAction) {
-        guard var next = journey, !preview, !isAnimating, !next.finished else { return }
+        guard !isAnimating, !hasUnreadableSave else { return }
+        var next = campaign
         do {
             try next.apply(action)
             scene.cancelTransientAnimations()
-            journey = next
+            campaign = next
             messageIsError = false
             switch action {
             case let .place(piece, position):
-                message = "\(piece.title) placed at \(position.label). \(Balance.definition(for: piece).legacy)"
-                if state.eraIndex == 0 {
-                    if piece == .quarry && state.tutorialProgress == 0 {
-                        journey?.current.tutorialProgress = 1
-                        message = "Connect this quarry with roads, then preview the lake it will leave."
-                    } else if piece == .orchard && state.tutorialProgress >= 2 {
-                        journey?.current.tutorialProgress = 3
-                        message = "Connect your producers to the depot with roads. Then dispatch."
-                    }
+                if piece.isInfrastructure {
+                    message = "\(piece.title) placed at \(position.label). \(state.spentCoins) gold coins spent."
+                } else if let result = liveEvaluation.producers.first(where: { $0.position == position }) {
+                    message = "\(piece.title) at \(position.label). \(result.reason)"
                 }
-            case .remove: message = "Piece removed. New pieces refund their cost; old routes cost 1 to remove."
-            case .clearWoodland: message = "Woodland cleared. The ground is ready to use."
+            case .remove: message = "Piece removed. Its gold coins are refunded."
+            case .clearWoodland: message = "Woodland cleared for \(Balance.clearingCost) gold coins."
             }
+            if state.levelIndex == 0 && liveEvaluation.meetsOrder { message = "Connected! Tap Dispatch to deliver the order and earn your stars." }
             feedback.play("placement", settings: settings)
-            guideFirstLegacy()
             persist()
             render()
             if case let .place(_, position) = action { scene.animatePlacement(at: position.visual) }
@@ -161,13 +168,13 @@ final class GameController: ObservableObject {
     }
 
     func roadStroke(_ positions: [Position]) {
-        guard var next = journey, !preview, !isAnimating, selectedPiece == .road else { return }
+        guard !isAnimating, selectedPiece == .road, !hasUnreadableSave else { return }
+        var next = campaign
         do {
             try next.applyRoadStroke(positions)
-            journey = next
-            message = "Route laid. Undo removes this whole stroke."
+            campaign = next
+            message = liveEvaluation.meetsOrder ? "Connected! Dispatch when you’re ready." : "Route laid. Undo removes this whole stroke."
             messageIsError = false
-            guideFirstLegacy()
             feedback.play("placement", settings: settings)
             persist()
             render()
@@ -175,41 +182,23 @@ final class GameController: ObservableObject {
     }
 
     func undo() {
-        guard var next = journey, next.canUndo, !preview, !isAnimating else { return }
-        next.undo()
-        journey = next
-        message = "Last change undone, including its budget and dispatch result."
+        guard campaign.canUndo, !isAnimating else { return }
+        campaign.undo()
+        message = "Last change undone, including its coins and dispatch result."
         messageIsError = false
-        persist()
-        render()
-    }
-
-    func togglePreview() {
-        guard !isAnimating, journey?.finished != true else { return }
-        preview.toggle()
-        messageIsError = false
-        if preview {
-            let hasLegacy = liveEvaluation.producers.contains { $0.worked }
-            if hasLegacy && state.eraIndex == 0 && state.tutorialProgress < 2 { journey?.current.tutorialProgress = 2 }
-            message = hasLegacy ? "Tomorrow, at these exact coordinates. Tap a tile to inspect." : "No working sites yet. Connect them to the depot to leave a legacy."
-        } else {
-            message = "Back to your unchanged plan. Every placement shapes tomorrow."
-        }
         persist()
         render()
     }
 
     func dispatch() {
-        guard var next = journey, !preview, !isAnimating, !next.finished else { return }
-        let result = next.dispatch()
-        if next.current.eraIndex == 0 { next.current.tutorialProgress = 4 }
-        journey = next
+        guard !isAnimating, !hasUnreadableSave else { return }
+        let result = campaign.dispatch()
         persist()
         render()
         isAnimating = true
         scene.inputEnabled = false
         messageIsError = !result.meetsOrder
-        message = result.meetsOrder ? "Order fulfilled. Your island is ready for its next chapter." : incompleteMessage(result)
+        message = result.meetsOrder ? "Order fulfilled. \(state.spentCoins) gold coins spent." : incompleteMessage(result)
         let deliveries = result.producers.filter { $0.worked && $0.resource != nil }.map { producer in
             let resource: DeliveryResource
             switch producer.resource! {
@@ -219,83 +208,60 @@ final class GameController: ObservableObject {
             }
             return DeliveryVisual(route: producer.route.map(\.visual), resource: resource)
         }
-        let deliveryDuration = max(0.15, scene.animateDeliveries(deliveries))
+        let duration = max(0.15, scene.animateDeliveries(deliveries))
         feedback.play("delivery", settings: settings)
         animationTask?.cancel()
         animationTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(deliveryDuration))
+            try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled, let self else { return }
             self.isAnimating = false
             self.scene.inputEnabled = true
+            if self.currentResult != nil {
+                self.feedback.play("era", settings: self.settings)
+                self.sheet = .result
+            }
         }
     }
 
     private func incompleteMessage(_ evaluation: Evaluation) -> String {
-        let missing = [
-            ("stone", scenario.order.stone - evaluation.totals.stone),
-            ("food", scenario.order.food - evaluation.totals.food),
-            ("timber", scenario.order.timber - evaluation.totals.timber)
-        ].filter { $0.1 > 0 }.map { "\($0.1) \($0.0)" }.joined(separator: ", ")
+        let missing = Resource.allCases.filter { evaluation.totals[$0] < level.order[$0] }
+            .map { "\(level.order[$0] - evaluation.totals[$0]) \($0.rawValue)" }.joined(separator: ", ")
         let idle = evaluation.producers.filter { !$0.worked }.count
-        return "Still need \(missing)." + (idle > 0 ? " Inspect \(idle) idle site\(idle == 1 ? "" : "s") for help." : " Add more connected producers.")
+        return "Still need \(missing)." + (idle > 0 ? " Every producer needs a road route; inspect idle sites." : " Add connected producers.")
     }
 
     func advance() {
-        guard var next = journey, canAdvance, !next.finished else { return }
+        guard canAdvance else { return }
+        var next = campaign
         do {
             try next.advance()
-            journey = next
-            persist()
-            isAnimating = true
-            preview = false
-            inspected = nil
-            tool = .inspect
-            transitionTitle = next.finished ? "Your island, through time." : "The years take root."
-            feedback.play("era", settings: settings)
-            scene.inputEnabled = false
-            scene.animateEraTransition { [weak self] in self?.render() }
-            animationTask?.cancel()
-            animationTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(self?.reduceMotion == true ? 0.2 : 1.7))
-                guard !Task.isCancelled, let self else { return }
-                self.isAnimating = false
-                self.transitionTitle = nil
-                self.messageIsError = false
-                self.message = next.finished ? "Three eras. One island shaped by you." : "Look closely. This landscape is the plan you left behind."
-                self.render()
-                if next.finished { self.sheet = .result }
-            }
+            restore(next, message: next.current.level.hint)
+            isPlaying = true
         } catch { fail(error.localizedDescription) }
     }
 
     func restart() {
-        guard var next = journey else { return }
-        next.restartEra()
-        restore(next, message: "This era has a fresh budget. Your inherited landscape is preserved.")
+        var next = campaign
+        next.restartLevel()
+        restore(next, message: "Fresh island, full coin budget. Your best stars are safe.")
     }
 
-    func rewind() {
-        guard var next = journey else { return }
-        do {
-            try next.rewind()
-            restore(next, message: "Back at the previous era’s beginning. Try a different legacy.")
-        } catch { fail(error.localizedDescription) }
-    }
-
-    private func restore(_ next: Journey, message: String) {
-        animationTask?.cancel()
-        scene.cancelTransientAnimations()
-        journey = next
-        preview = false
-        isAnimating = false
-        transitionTitle = nil
+    private func restore(_ next: Campaign, message: String) {
+        cancelAnimation()
+        campaign = next
         inspected = nil
         sheet = nil
-        tool = .inspect
+        tool = .piece(firstProducer)
         self.message = message
         messageIsError = false
         persist()
         render()
+    }
+
+    private func cancelAnimation() {
+        animationTask?.cancel()
+        scene.cancelTransientAnimations()
+        isAnimating = false
     }
 
     func goHome() {
@@ -305,10 +271,7 @@ final class GameController: ObservableObject {
     }
 
     func interrupted() {
-        animationTask?.cancel()
-        scene.cancelTransientAnimations()
-        isAnimating = false
-        transitionTitle = nil
+        cancelAnimation()
         persist()
         render()
     }
@@ -316,9 +279,19 @@ final class GameController: ObservableObject {
     func persist() {
         guard !hasUnreadableSave else { return }
         do {
-            try store.save(SavedJourney(journey: journey, settings: settings))
+            try store.save(SavedCampaign(campaign: campaign, settings: settings))
             saveError = nil
         } catch { saveError = "Could not save this change: \(error.localizedDescription)" }
+    }
+
+    func recoverProgress() {
+        do {
+            try store.preserveUnreadableSave()
+            campaign = .new
+            hasUnreadableSave = false
+            persist()
+            message = "A new campaign is ready. The previous progress file was preserved separately."
+        } catch { saveError = "Could not preserve the previous file: \(error.localizedDescription)" }
     }
 
     func fail(_ text: String) {
@@ -327,37 +300,25 @@ final class GameController: ObservableObject {
         feedback.invalid(settings: settings)
     }
 
-    private func guideFirstLegacy() {
-        if state.eraIndex == 0, state.tutorialProgress < 2,
-           liveEvaluation.producers.contains(where: { $0.piece == .quarry && $0.worked }) {
-            message = "Your quarry now leaves a lake. Preview tomorrow before planting orchards."
-        }
-    }
-
     func render() {
         let current = state
-        let board = displayedBoard
-        let evaluation = Rules.evaluate(current)
-        let cells = (0..<7).flatMap { row in (0..<7).map { col in
-            let position = Position(row: row, col: col)
-            let tile = board[position]
-            let isDepot = position == board.depot
+        let evaluation = liveEvaluation
+        let cells = Board.positions.map { position in
+            let tile = current.board[position]
             let producer = evaluation.producers.first { $0.position == position }
-            let allowed: Bool? = !preview && selectedPiece != nil && journey?.finished != true
-                ? Rules.placementError(selectedPiece!, at: position, in: current) == nil : nil
             return BoardCellVisual(
                 point: position.visual, terrain: tile.terrain.visual,
-                building: isDepot ? .depot : tile.building?.visual,
+                building: position == current.board.depot ? .depot : tile.building?.visual,
                 infrastructure: tile.infrastructure?.visual,
-                isInherited: tile.inheritedInfrastructure,
-                isConnected: producer?.worked ?? true,
+                isInherited: false,
+                isConnected: producer?.worked,
                 isSelected: inspected == position,
-                placementAllowed: allowed,
-                futureChanged: preview && tile != current.board[position]
+                placementAllowed: selectedPiece.map { Rules.placementError($0, at: position, in: current) == nil },
+                futureChanged: false
             )
-        } }
-        scene.drawsRoads = selectedPiece == .road && !preview
+        }
+        scene.drawsRoads = selectedPiece == .road
         scene.inputEnabled = !isAnimating
-        scene.render(BoardSceneModel(cells: cells, isPreview: preview, reduceMotion: reduceMotion))
+        scene.render(BoardSceneModel(cells: cells, isPreview: false, reduceMotion: reduceMotion))
     }
 }

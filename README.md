@@ -1,90 +1,83 @@
 # Afterworks
 
-**Build for today. Shape tomorrow.** A native, offline iPhone strategy game built with SwiftUI and SpriteKit. Three connected eras unfold on one 7 × 7 island. Your connected quarries become lakes, orchards become woodland, and reservoirs become wetland at their exact coordinates.
+A native, offline iPhone puzzle game about building efficient delivery routes. Twelve independent, authored islands progress from one orchard and one road to a combined production network. Spend gold coins on construction, fulfil the order, and earn up to three stars for an economical solution.
 
 ## Run
 
 1. Open `Afterworks.xcodeproj` in Xcode.
 2. Select the shared **Afterworks** scheme and an iPhone simulator.
-3. Run. No dependencies to download, server, account, or configuration required.
+3. Run. No server, account, external dependencies, or configuration is required.
 
-The project targets iOS 17 or later and uses Swift 5 language mode. It was built with Xcode 27.1. To run on a physical iPhone, select your development team under **Afterworks → Signing & Capabilities**, choose a unique bundle identifier if needed, select the connected device, and Run. Physical-device signing is intentionally left to your own team.
+The project targets iOS 17 or later and uses Swift 5 language mode. The available toolchain is Xcode 27.1. For a physical iPhone, select your development team under **Afterworks → Signing & Capabilities**, choose a unique bundle identifier if needed, select the connected device, and Run.
 
 ```sh
 xcrun simctl list devices available
 scripts/verify-ios.sh <simulator-udid>
 ```
 
-The script runs the rules tests, builds the real application, and runs the native UI tests. Logs and result bundles go into `artifacts/`.
-It keeps the Mac awake only while tests run and applies bounded test timeouts. Export the retained screenshots with `python3 scripts/export-screenshots.py artifacts/<result>.xcresult <device-name>`.
-
-For a build without tests:
+The verification script runs the rules tests, builds the app, and runs the native UI suite sequentially on the selected simulator. It keeps the Mac awake only while testing and applies bounded timeouts. The full twelve-level touch test has a 600-second allowance; ordinary tests use the shorter default. Logs and result bundles go into `artifacts/`.
 
 ```sh
 xcodebuild build -project Afterworks.xcodeproj -scheme Afterworks \
   -destination 'platform=iOS Simulator,id=<simulator-udid>' \
   -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
+
+python3 scripts/export-screenshots.py artifacts/<result>.xcresult <device-name>
 ```
 
 ## Play
 
-- Select a piece and tap a highlighted tile, or drag the piece from the tray onto the island. Scroll the tray for more pieces. Drag across neighboring board cells with Road selected to create one undoable stroke.
-- The **BUILD** number is the only construction currency. New pieces refund their full cost when removed. Invalid placements spend nothing. Undo restores the preceding plan, budget, and valid dispatch result.
-- Resource numbers show the output of the current plan against its order. Dispatch animates that exact result once. Repeating it cannot accumulate goods. Editing invalidates the previous check.
-- Roads join orthogonally. Producers must touch the depot or a road/bridge network reaching it. Buildings never carry traffic. Lakes and wetland require bridges.
-- **Preview next era** is read-only and uses the same transformation as actual advancement. Only valid, connected buildings receive their legacy. Inactive buildings disappear, leaving their underlying terrain. All built roads and bridges persist as free old routes.
-- Use the pointer to inspect a tile’s output, actual route, and future. The question-mark button explains every rule and shows the last dispatch report.
-- The journey menu has sound/haptic settings, restart, rewind, new journey, and home. New journey, restart, and rewind require confirmation. New journeys preserve settings.
-- The **tile list** offers the same building and inspection actions as the visual board, with descriptive accessibility labels. System Reduce Motion disables environmental movement and shortens delivery/era effects.
+- Select a building or road and tap a highlighted tile, or drag the piece from the tray onto the island. Drag across neighboring cells with Road selected to lay one undoable stroke.
+- Every producer must reach the depot through an orthogonal infrastructure route containing at least one road tile. Standing beside the depot never gives an automatic connection. Buildings do not carry traffic. Bridges cross water and wetland.
+- Gold coins are the construction budget for the current level. Removing a placed piece refunds its full price; invalid actions spend nothing. Undo restores the previous plan, coins, and valid dispatch result. Clearing woodland has an explicit coin cost and produces no timber.
+- Stone, food, and timber are delivery objectives. Dispatch calculates each connected producer's output once and animates that exact result along the built route. Repeated dispatch does not accumulate goods, stars, or unlocks.
+- Three stars require the verified minimum coin cost. Two stars allow the level's displayed additional spending; any successful plan within the budget earns one star. Score uses net coins spent on the plan. The highest star result and lowest successful cost are retained when replaying a level.
+- A successful dispatch unlocks the next level immediately. Keep improving, retry, or move on. Every level starts with its own terrain, empty building layout, and full coin budget. Boards and goods never carry between levels.
+- The level map shows twelve fixed puzzles, completed stars, locked levels, and a maximum of 36 stars. Level generation is intentionally deferred.
+- Inspect any tile for its terrain, output, connection status, and actual delivery route. The tile-list interface provides equivalent accessible building and inspection actions.
+- The menu includes restart, level selection, sound, and haptic settings. Restarting preserves earned stars and unlocked levels. System Reduce Motion disables environmental movement and shortens visual delivery effects.
 
-## Balance
+## Rules and balance
 
-All numbers and piece availability live in `Sources/AfterworksCore/Balance.swift`.
+Costs, outputs, per-level piece limits, budgets, star thresholds, terrain, and orders are centralized in `Sources/AfterworksCore/`. Every level includes a reproducible optimal fixture. Native tests translate those fixtures into ordinary taps on the app.
 
-| Piece | Build cost | Output | Limit per era | Legacy |
-| --- | ---: | --- | ---: | --- |
-| Quarry | 5 | 4 stone | 2 | Lake |
-| Orchard | 4 | 3 food | 3 | Woodland |
-| Lumber camp | 4 | 4 timber | 3 | Meadow; adjacent woods remain |
-| Field | 3 | 3 food, sometimes +2 | 4 | Meadow, or preserves underlying wetland |
-| Reservoir | 4 | Irrigates fields | 2 | Wetland |
-| Road | 1 | Connection | 49 | Old route |
-| Bridge | 3 | Water/wetland connection | 8 | Old bridge over unchanged terrain |
+Fields need adjacent water or wetland beneath them. A field on wetland, or within two orthogonal steps of a connected reservoir, gets a food bonus. Bonuses do not stack. A reservoir must be beside water and have its own road connection. Woodland supplies adjacent lumber camps; clearing it produces no timber. Cliffs are impassable and cannot be built on or cleared.
 
-Fields need adjacent lake or wetland beneath them. Fields on wetland **or** within Manhattan distance 2 of a valid connected reservoir receive +2 food. These bonuses do not stack. A reservoir must touch a lake and connect to the depot. Clearing woodland costs 2 and yields no timber. Removing an inherited road or bridge costs 1 with no refund; lakes and wetlands cannot be moved or filled.
+Coordinates use columns **A–G** from west to east and rows **1–7** from north to south. The optimal action sequences are in `SolutionFixture.primary`. For each island, `MinimumCostProof.verify` first plays the fixture, then exhausts every cheaper connected infrastructure network that could still afford enough production. It checks woodland clearing choices, every legal reservoir site, and producer assignments. The optimistic production bound ignores placement restrictions, so it cannot exclude a cheaper successful layout. The core tests require both a successful fixture at the stated cost and no cheaper completion. Costs and outputs come from `Balance`; the verifier supports the authored rules, positive delivery orders, and at most one reservoir per level.
 
-| Era | Construction | Order |
-| --- | ---: | --- |
-| First foundations | 22 | 4 stone, 6 food |
-| What remains | 26 | 10 food, 4 timber |
-| A lasting place | 26 | 4 stone, 8 food, 8 timber |
+| Level | Island | Main lesson | Budget | 3 stars | 2 stars |
+| --- | --- | --- | ---: | ---: | ---: |
+| 1 | First delivery | One orchard and one road | 9 | 5 | 7 |
+| 2 | A little farther | Extend the route | 10 | 6 | 8 |
+| 3 | Better together | Share roads between orchards | 14 | 9 | 11 |
+| 4 | Stone & supper | Deliver two resources | 17 | 11 | 14 |
+| 5 | At the wood's edge | Keep woodland beside camps | 17 | 11 | 14 |
+| 6 | Across the blue | Bridge between shores | 19 | 13 | 16 |
+| 7 | The price of a shortcut | Compare crossing costs | 21 | 14 | 17 |
+| 8 | Soft ground | Use productive wetland | 18 | 12 | 15 |
+| 9 | Water within reach | Irrigate connected fields | 20 | 13 | 16 |
+| 10 | Room for everyone | Clear a route while preserving woodland | 26 | 19 | 23 |
+| 11 | A full manifest | Combine all three resources | 33 | 25 | 29 |
+| 12 | Every coin counts | Plan clearing, irrigation, and a crossing together | 42 | 33 | 37 |
 
-## Reproducible journey
+Star columns are maximum coins spent. Completing an order above the two-star threshold, but within its budget, earns one star.
 
-Columns are **A–G**, rows are **1–7** from north to south. The depot is **D7** throughout. Place each era’s pieces, Dispatch, then Advance. `SolutionFixture.primary` contains the same sequence as executable Swift actions; `SolutionFixture.alternative` mirrors it for another complete journey.
+## Saving and architecture
 
-| Era | Roads | Producers/support |
-| --- | --- | --- |
-| 1 | D6, D5, C5, D4, D3 | Quarry B5; orchards C3, E5 |
-| 2 | C4, C6, A6, A7, B7, C7 | Reservoir B4; fields B6, A5; lumber camp E4 |
-| 3 | E6, F6, D2 | Quarry F5; fields B4, B6; lumber camps C2, E4 |
+- `Sources/AfterworksCore/`: level definitions, placement and connectivity, deterministic evaluation, star scoring, campaign progress, undo, validation, optimal fixtures, and minimum-cost checks.
+- `Afterworks/App/`: SwiftUI presentation, controller, versioned persistence, and sound/haptics.
+- `Afterworks/Rendering/`: original SpriteKit terrain/buildings, matching tray artwork, touch input, and presentation-only animations.
+- `Tests/AfterworksCoreTests/`: focused rules and campaign tests.
+- `AfterworksUITests/`: actual touch progression, stars, replay, drag gestures, settings, accessible interaction, and interrupted dispatch/relaunch.
 
-Remaining construction is 4, 6, and 4. Era 1 leaves a lake at B5 and woodland at C3/E5. Era 2 leaves wetland at B4. The alternative first plan leaves its lake at F5; B6 can no longer host a field while F6 can. Tests verify both complete journeys and these different later opportunities.
+Campaign saves use version 2 JSON in `campaign.json` under the app's Application Support directory. They include the active plan, remaining coins, current evaluation, undo history, best level results, and settings. Writes are atomic and decoded state is validated. Completion is saved before delivery animation, so quitting cannot duplicate a reward or lose an already committed unlock.
 
-## State and architecture
+The earlier prototype's `journey.json` is preserved. Its settings can be carried forward; its era terrain is not converted into completed independent levels. Test launches use a separate `Afterworks-Testing` save directory. `--uitesting --reset-progress` resets only campaign test data.
 
-- `Sources/AfterworksCore/`: board and balance definitions, placement/connectivity, deterministic delivery, shared transformation, undo/checkpoints, reproducible fixtures. No rendering framework imports.
-- `Afterworks/App/`: SwiftUI interface, controller, atomic versioned local persistence, optional sound/haptics.
-- `Afterworks/Rendering/`: original layered vector scenery, matching tray glyphs, touch input, and presentation-only animation.
-- `Tests/AfterworksCoreTests/`: focused deterministic rules tests.
-- `AfterworksUITests/`: real touch journeys, drag gestures, invalid placement, preview, undo, restart/rewind, background/relaunch, settings, and accessible building.
+The app uses SwiftUI, SpriteKit, AVFoundation, and local Swift code. Original assets and audio are bundled, with reproducible generators under `scripts/`. There are no network requests, tracking, purchases, or generated levels.
 
-Saves are version 1 JSON in the app’s Application Support directory. They include the current plan, construction, evaluation, undo states, checkpoints, completed-era results, tutorial progress, and settings. Available pieces are derived from the saved era and centralized balance. Saves are validated on load and written atomically. Unsupported/corrupt files are preserved until the player confirms a replacement. Advancement is committed and saved **before** its visual transition; animations never produce resources or mutate the journey.
+## Evidence and limits
 
-UI tests use a separate `Afterworks-Testing` save directory. `--uitesting --reset-journey` clears only that test journey; production saves are unaffected.
+The campaign passed 23 core tests and all six native UI scenarios on both iPhone SE (3rd generation) and iPhone 17 Pro Max simulators running iOS 26.4. Both devices completed all twelve levels through touches for 36 stars; the suite also covers the largest accessibility text size, replay, persistence, and interrupted delivery. All twelve minimum coin costs are verified.
 
-Original art is drawn locally with SpriteKit shapes. The app icon and short audio cues are bundled, with reproducible generators under `scripts/`. There are no external packages, network requests, tracking, or purchases.
-
-## Verification evidence
-
-See `artifacts/verification.md` for the exact completed checks and limitations, and `artifacts/screenshots/` for captures from the running application. Human pacing and physical-device sound/haptics still benefit from a device playtest; the 3–5-minute-per-era target is a design goal, not a measured user study.
+See `artifacts/campaign-verification.md` for the exact runs and `artifacts/screenshots/` for running-app captures. Physical-device feedback and human difficulty calibration still benefit from hands-on playtesting. All twelve puzzles are fixed and solvable; the increasing challenge is authored rather than a claim that every player will experience a strictly increasing difficulty curve.

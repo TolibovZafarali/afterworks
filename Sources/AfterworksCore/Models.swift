@@ -16,7 +16,7 @@ public struct Position: Codable, Hashable, Comparable, Identifiable, Sendable {
 }
 
 public enum Terrain: String, Codable, CaseIterable, Sendable {
-    case grass, stone, water, woodland, wetland
+    case grass, stone, water, woodland, wetland, cliff
     public var title: String {
         switch self {
         case .grass: return "Meadow"
@@ -24,15 +24,17 @@ public enum Terrain: String, Codable, CaseIterable, Sendable {
         case .water: return "Lake"
         case .woodland: return "Woodland"
         case .wetland: return "Wetland"
+        case .cliff: return "Cliff"
         }
     }
     public var description: String {
         switch self {
         case .grass: return "Dry, usable ground for orchards, fields and camps."
-        case .stone: return "Quarry here for stone. A connected quarry leaves a lake."
+        case .stone: return "Quarries produce stone here. Roads can cross this dry ground."
         case .water: return "Irrigates adjacent fields. Cross with a bridge. Lakes cannot be moved or filled."
-        case .woodland: return "Supplies adjacent lumber camps. Clear for \(Balance.clearingCost) construction; clearing produces no timber."
+        case .woodland: return "Supplies adjacent lumber camps. Clear for \(Balance.clearingCost) gold coins; clearing produces no timber."
         case .wetland: return "Fields here produce +\(Balance.fieldBonus) food. Cross with a bridge; wetland cannot be filled."
+        case .cliff: return "Solid cliff. Buildings, roads and bridges cannot be placed here."
         }
     }
 }
@@ -99,18 +101,8 @@ public struct Board: Codable, Equatable, Sendable {
         get { tiles[position.row * Self.side + position.col] }
         set { tiles[position.row * Self.side + position.col] = newValue }
     }
-    public static var initial: Board {
-        var board = Board()
-        for position in [Position(row: 4, col: 1), Position(row: 4, col: 5), Position(row: 2, col: 1),
-                         Position(row: 2, col: 5), Position(row: 0, col: 3)] {
-            board[position].terrain = .stone
-        }
-        for position in [Position(row: 0, col: 0), Position(row: 0, col: 1), Position(row: 1, col: 0),
-                         Position(row: 0, col: 6), Position(row: 1, col: 6)] {
-            board[position].terrain = .water
-        }
-        return board
-    }
+    public static var initial: Board { Balance.levels[0].initialBoard }
+
 }
 
 public struct ProducerResult: Codable, Equatable, Identifiable, Sendable {
@@ -137,18 +129,21 @@ public struct Evaluation: Codable, Equatable, Sendable {
 }
 
 public struct GameState: Codable, Equatable, Sendable {
-    public var eraIndex: Int
+    public var levelIndex: Int
     public var board: Board
     public var budget: Int
     public var evaluation: Evaluation?
     public var tutorialProgress: Int
     public var revision: Int
-    public init(eraIndex: Int = 0, board: Board = .initial, budget: Int? = nil,
+    public init(levelIndex: Int = 0, board: Board? = nil, budget: Int? = nil,
                 evaluation: Evaluation? = nil, tutorialProgress: Int = 0, revision: Int = 0) {
-        self.eraIndex = eraIndex; self.board = board; self.budget = budget ?? Balance.scenarios[eraIndex].budget
+        self.levelIndex = levelIndex
+        self.board = board ?? Balance.levels[levelIndex].initialBoard
+        self.budget = budget ?? Balance.levels[levelIndex].budget
         self.evaluation = evaluation; self.tutorialProgress = tutorialProgress; self.revision = revision
     }
-    public var scenario: Scenario { Balance.scenarios[eraIndex] }
+    public var level: LevelDefinition { Balance.levels[levelIndex] }
+    public var spentCoins: Int { level.budget - budget }
     public var canAdvance: Bool { evaluation?.meetsOrder == true && evaluation?.revision == revision }
     public func count(of piece: Piece) -> Int {
         board.tiles.filter { $0.building == piece || $0.infrastructure == piece }.count

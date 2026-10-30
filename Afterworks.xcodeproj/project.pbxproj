@@ -7,6 +7,7 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* AfterworksCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* AfterworksCore */; };
+		A10000000000000000000003 /* AfterworksCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* AfterworksCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -29,7 +30,7 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		A60000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001,); runOnlyForDeploymentPostprocessing = 0; };
-		A60000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A60000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000003,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -59,7 +60,7 @@
 			dependencies = (AA0000000000000000000001,);
 			fileSystemSynchronizedGroups = (A50000000000000000000002,);
 			name = AfterworksUITests;
-			packageProductDependencies = ();
+			packageProductDependencies = (A10000000000000000000002,);
 			productName = AfterworksUITests;
 			productReference = A30000000000000000000002;
 			productType = "com.apple.product-type.bundle.ui-testing";

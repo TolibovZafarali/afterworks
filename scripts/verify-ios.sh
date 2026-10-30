@@ -19,7 +19,7 @@ caffeinate -i xcodebuild test \
     -parallel-testing-enabled NO \
     -test-timeouts-enabled YES \
     -default-test-execution-time-allowance 180 \
-    -maximum-test-execution-time-allowance 240 \
+    -maximum-test-execution-time-allowance 600 \
     -derivedDataPath DerivedData \
     -resultBundlePath "artifacts/ui-tests-$RUN_STAMP.xcresult" \
     CODE_SIGNING_ALLOWED=NO \

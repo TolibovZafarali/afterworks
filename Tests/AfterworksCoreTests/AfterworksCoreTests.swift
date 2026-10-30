@@ -3,301 +3,355 @@ import XCTest
 
 final class AfterworksCoreTests: XCTestCase {
     private func p(_ row: Int, _ col: Int) -> Position { Position(row: row, col: col) }
-    private func applyFixture(_ era: Int, to journey: inout Journey, variant: Int = 0) throws {
-        for action in SolutionFixture.actions(forEra: era, variant: variant) { try journey.apply(action) }
-    }
-    private func eraTwo(variant: Int = 0) throws -> Journey {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey, variant: variant)
-        journey.dispatch()
-        try journey.advance()
-        return journey
+    private func applyFixture(_ level: Int, to campaign: inout Campaign) throws {
+        for action in SolutionFixture.primary[level] { try campaign.apply(action) }
     }
 
-    func testOrthogonalRoadsConnectAndRoutesEndAtDepot() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        let result = journey.dispatch()
-        XCTAssertTrue(result.meetsOrder)
-        XCTAssertEqual(result.totals, Resources(stone: 4, food: 6))
-        for producer in result.producers {
-            XCTAssertEqual(producer.route.first, producer.position)
-            XCTAssertEqual(producer.route.last, journey.current.board.depot)
-            for (a, b) in zip(producer.route, producer.route.dropFirst()) { XCTAssertEqual(a.distance(to: b), 1) }
-            for routeTile in producer.route.dropFirst().dropLast() {
-                XCTAssertNotNil(journey.current.board[routeTile].infrastructure)
-                XCTAssertNil(journey.current.board[routeTile].building)
+    func testAllTwelveSolutionsAndIndependentFreshStarts() throws {
+        var campaign = Campaign.new
+        XCTAssertEqual(Balance.levels.count, 12)
+        for index in Balance.levels.indices {
+            XCTAssertEqual(campaign.current.levelIndex, index)
+            XCTAssertEqual(campaign.current.board, Balance.levels[index].initialBoard)
+            XCTAssertEqual(campaign.current.budget, Balance.levels[index].budget)
+            XCTAssertTrue(campaign.undoHistory.isEmpty)
+            try applyFixture(index, to: &campaign)
+            let evaluation = campaign.dispatch()
+            XCTAssertTrue(evaluation.meetsOrder, "Level \(index + 1): \(evaluation.totals)")
+            XCTAssertEqual(campaign.current.spentCoins, Balance.levels[index].minimumCoins)
+            XCTAssertEqual(campaign.currentStars, 3)
+            try campaign.validate()
+            for producer in evaluation.producers where producer.worked {
+                XCTAssertEqual(producer.route.first, producer.position)
+                XCTAssertEqual(producer.route.last, campaign.current.board.depot)
+                XCTAssertEqual(Set(producer.route).count, producer.route.count)
+                XCTAssertTrue(producer.route.contains { campaign.current.board[$0].infrastructure == .road })
+                for (a, b) in zip(producer.route, producer.route.dropFirst()) { XCTAssertEqual(a.distance(to: b), 1) }
+            }
+            if index < 11 { try campaign.advance() }
+        }
+        XCTAssertEqual(campaign.totalStars, 36)
+        XCTAssertTrue(campaign.isComplete)
+        XCTAssertEqual(campaign.highestUnlockedIndex, 11)
+        XCTAssertThrowsError(try campaign.advance())
+    }
+
+    func testExactMinimumCertificatesForAllTwelveLevels() throws {
+        for index in Balance.levels.indices {
+            let certificate = try MinimumCostProof.verify(levelIndex: index)
+            print("Level \(index + 1): minimum \(certificate.claimedMinimum), checked \(certificate.checkedNetworks) networks, cheaper \(String(describing: certificate.cheaperCompletion))")
+            XCTAssertTrue(certificate.proven, "\(certificate)")
+        }
+    }
+
+    func testDirectDepotAdjacencyNeedsAnActualRoadRoute() throws {
+        var campaign = Campaign.new
+        try campaign.apply(.place(.orchard, p(5, 3)))
+        XCTAssertEqual(campaign.dispatch().totals.food, 0)
+        XCTAssertFalse(campaign.current.canAdvance)
+        try campaign.applyRoadStroke([p(6, 4), p(5, 4)])
+        XCTAssertEqual(campaign.dispatch().totals.food, 3)
+    }
+
+    private func customBoard(_ terrains: [(Position, Terrain)], pieces: [(Position, Piece)]) -> Board {
+        var board = Board(tiles: Array(repeating: Tile(terrain: .cliff), count: 49), depot: p(6, 3))
+        board[board.depot].terrain = .grass
+        for (position, terrain) in terrains { board[position].terrain = terrain }
+        for (position, piece) in pieces {
+            if piece.isInfrastructure { board[position].infrastructure = piece }
+            else { board[position].building = piece }
+        }
+        return board
+    }
+
+    func testBridgeOnlyPathAndDeadEndRoadSpurDoNotConnect() {
+        let board = customBoard([(p(5,3),.water),(p(4,3),.grass),(p(5,4),.grass)],
+                                pieces: [(p(5,3),.bridge),(p(4,3),.orchard),(p(5,4),.road)])
+        XCTAssertEqual(Rules.route(from: p(4,3), on: board), [])
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 0)
+    }
+
+    func testLongerSimpleRoadPathWinsOverBridgeOnlyShortcut() {
+        let board = customBoard([(p(5,3),.water),(p(4,3),.grass),(p(5,4),.grass),(p(6,4),.grass)],
+                                pieces: [(p(5,3),.bridge),(p(4,3),.orchard),(p(5,4),.road),(p(6,4),.road)])
+        XCTAssertEqual(Rules.route(from: p(4,3), on: board), [p(4,3),p(5,3),p(5,4),p(6,4),p(6,3)])
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 3)
+    }
+
+    func testDiagonalContactAndBuildingsDoNotCarryRoads() {
+        let board = customBoard([(p(5,3),.grass),(p(4,2),.grass),(p(4,3),.grass),(p(3,3),.grass)],
+                                pieces: [(p(5,3),.road),(p(4,2),.orchard),(p(4,3),.orchard),(p(3,3),.orchard)])
+        let result = Rules.evaluate(GameState(board: board))
+        XCTAssertEqual(result.totals.food, 3)
+        XCTAssertEqual(result.producers.first { $0.position == p(4,2) }?.connected, false)
+        XCTAssertEqual(result.producers.first { $0.position == p(3,3) }?.connected, false)
+    }
+
+    func testCoinRefundAndUndoRestoreExactState() throws {
+        var campaign = Campaign.new
+        let start = campaign.current
+        try campaign.apply(.place(.orchard, p(4,3)))
+        let placed = campaign.current
+        XCTAssertEqual(campaign.current.spentCoins, 4)
+        try campaign.apply(.remove(p(4,3)))
+        XCTAssertEqual(campaign.current.budget, start.budget)
+        XCTAssertTrue(campaign.undo())
+        XCTAssertEqual(campaign.current, placed)
+        XCTAssertTrue(campaign.undo())
+        XCTAssertEqual(campaign.current, start)
+        XCTAssertFalse(campaign.undo())
+    }
+
+    func testClearingCostsCoinsRemovalDoesNotRefundClearingAndUndoDoes() throws {
+        var campaign = Campaign(current: GameState(levelIndex: 9))
+        let original = campaign.current
+        try campaign.apply(.clearWoodland(p(4,3)))
+        try campaign.apply(.place(.road, p(4,3)))
+        try campaign.apply(.remove(p(4,3)))
+        XCTAssertEqual(campaign.current.spentCoins, 2)
+        XCTAssertEqual(campaign.current.board[p(4,3)].terrain, .grass)
+        for _ in 0..<3 { XCTAssertTrue(campaign.undo()) }
+        XCTAssertEqual(campaign.current, original)
+    }
+
+    func testInvalidPlacementAndFailedStrokeAreAtomic() throws {
+        var campaign = Campaign.new
+        let before = campaign
+        XCTAssertThrowsError(try campaign.apply(.place(.quarry, p(4,3))))
+        XCTAssertThrowsError(try campaign.apply(.place(.road, p(0,0))))
+        XCTAssertThrowsError(try campaign.apply(.place(.road, p(6,3))))
+        XCTAssertThrowsError(try campaign.applyRoadStroke([p(5,3),p(4,4)]))
+        XCTAssertEqual(campaign, before)
+        try campaign.applyRoadStroke([p(6,3),p(5,3),p(4,3)])
+        XCTAssertEqual(campaign.undoHistory.count, 1)
+        XCTAssertEqual(campaign.current.spentCoins, 2)
+        XCTAssertTrue(campaign.undo())
+        XCTAssertEqual(campaign, before)
+    }
+
+    func testAllStarBandsUseNetCoinsAndBestScoreNeverRegresses() throws {
+        var campaign = Campaign.new
+        try applyFixture(0, to: &campaign)
+        for position in [p(4,4),p(5,4),p(6,4)] { try campaign.apply(.place(.road, position)) }
+        XCTAssertTrue(campaign.dispatch().meetsOrder)
+        XCTAssertEqual(campaign.currentStars, 1)
+        XCTAssertEqual(campaign.record(for: 0)?.spentCoins, 8)
+        try campaign.apply(.remove(p(6,4)))
+        campaign.dispatch()
+        XCTAssertEqual(campaign.currentStars, 2)
+        for position in [p(4,4),p(5,4)] { try campaign.apply(.remove(position)) }
+        campaign.dispatch()
+        XCTAssertEqual(campaign.currentStars, 3)
+        let best = campaign.record(for: 0)
+        for position in [p(4,4),p(5,4),p(6,4)] { try campaign.apply(.place(.road, position)) }
+        campaign.dispatch()
+        XCTAssertEqual(campaign.currentStars, 1)
+        XCTAssertEqual(campaign.record(for: 0), best)
+        try campaign.validate()
+    }
+
+    func testRepeatedDispatchIsIdempotentAndUnlockIsImmediate() throws {
+        var campaign = Campaign.new
+        try applyFixture(0, to: &campaign)
+        let result = campaign.dispatch()
+        let after = campaign
+        for _ in 0..<20 { XCTAssertEqual(campaign.dispatch(), result) }
+        XCTAssertEqual(campaign, after)
+        XCTAssertEqual(campaign.records.count, 1)
+        XCTAssertEqual(campaign.highestUnlockedIndex, 1)
+        try campaign.startLevel(1)
+        XCTAssertEqual(campaign.current.levelIndex, 1)
+    }
+
+    func testEditingInvalidatesCurrentResultButPreservesHistoryAndUndoRestoresResult() throws {
+        var campaign = Campaign.new
+        try applyFixture(0, to: &campaign)
+        campaign.dispatch()
+        let complete = campaign.current
+        try campaign.apply(.remove(p(5,3)))
+        XCTAssertNil(campaign.current.evaluation)
+        XCTAssertFalse(campaign.current.canAdvance)
+        XCTAssertEqual(campaign.totalStars, 3)
+        XCTAssertThrowsError(try campaign.advance())
+        XCTAssertTrue(campaign.undo())
+        XCTAssertEqual(campaign.current, complete)
+        try campaign.validate()
+        try campaign.advance()
+        XCTAssertThrowsError(try campaign.advance())
+        XCTAssertEqual(campaign.current.board, Balance.levels[1].initialBoard)
+    }
+
+    func testReplayAndRestartNeverResetOtherLevelsOrUnlockLockedLevels() throws {
+        var campaign = Campaign.new
+        XCTAssertThrowsError(try campaign.startLevel(1))
+        try applyFixture(0, to: &campaign)
+        campaign.dispatch()
+        try campaign.advance()
+        try applyFixture(1, to: &campaign)
+        campaign.dispatch()
+        let records = campaign.records
+        try campaign.startLevel(0)
+        XCTAssertEqual(campaign.current.board, Balance.levels[0].initialBoard)
+        try campaign.apply(.place(.road,p(5,3)))
+        campaign.restartLevel()
+        XCTAssertEqual(campaign.current.board, Balance.levels[0].initialBoard)
+        XCTAssertEqual(campaign.records, records)
+        XCTAssertTrue(campaign.undoHistory.isEmpty)
+        XCTAssertThrowsError(try campaign.startLevel(3))
+        try campaign.validate()
+    }
+
+    func testWetlandsAndConnectedReservoirBonusAreNotStacked() throws {
+        var campaign = Campaign(current: GameState(levelIndex: 8))
+        try applyFixture(8, to: &campaign)
+        XCTAssertEqual(campaign.dispatch().totals.food, 10)
+        try campaign.apply(.remove(p(2,3)))
+        XCTAssertEqual(campaign.dispatch().totals.food, 6)
+        var wet = Campaign(current: GameState(levelIndex: 7))
+        try applyFixture(7, to: &wet)
+        XCTAssertEqual(wet.dispatch().totals.food, 13)
+    }
+
+    func testPersistenceRoundTripAndValidationRejectsCorruption() throws {
+        var campaign = Campaign.new
+        try applyFixture(0, to: &campaign)
+        campaign.dispatch()
+        try campaign.apply(.remove(p(5,3)))
+        let data = try JSONEncoder().encode(campaign)
+        let decoded = try JSONDecoder().decode(Campaign.self, from: data)
+        XCTAssertEqual(decoded, campaign)
+        try decoded.validate()
+        var bad = campaign; bad.current.budget += 1
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.records[0].stars = 1
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.current.board.tiles.removeLast()
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.current.levelIndex = 99
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.current.board[p(0,0)].terrain = .grass
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.records.append(bad.records[0])
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign; bad.undoHistory[0].levelIndex = -1
+        XCTAssertThrowsError(try bad.validate())
+    }
+
+    func testPieceLimitsAndCliffsAreEnforced() throws {
+        var campaign = Campaign.new
+        try campaign.apply(.place(.orchard, p(4,3)))
+        XCTAssertThrowsError(try campaign.apply(.place(.orchard, p(4,4))))
+        let board = Balance.levels[5].initialBoard
+        let cliff = Board.positions.first { board[$0].terrain == .cliff }!
+        for piece in Piece.allCases { XCTAssertNotNil(Rules.terrainError(piece, at: cliff, on: board)) }
+    }
+
+    func testBridgeCrossingIsRequiredAndCannotBeReplacedByRoad() throws {
+        var campaign = Campaign(current: GameState(levelIndex: 5))
+        try applyFixture(5, to: &campaign)
+        XCTAssertTrue(campaign.dispatch().meetsOrder)
+        try campaign.apply(.remove(p(4,3)))
+        XCTAssertFalse(campaign.dispatch().meetsOrder)
+        let before = campaign
+        XCTAssertThrowsError(try campaign.apply(.place(.road, p(4,3))))
+        XCTAssertEqual(campaign, before)
+        try campaign.apply(.place(.bridge, p(4,3)))
+        XCTAssertTrue(campaign.dispatch().meetsOrder)
+    }
+
+    func testReservoirMustConnectAndItsRadiusIsManhattanDistance() {
+        var board = customBoard([(p(5,3),.grass),(p(4,3),.grass),(p(3,3),.grass),
+                                 (p(3,2),.grass),(p(3,1),.water),(p(4,2),.grass),(p(4,1),.water)],
+                                pieces: [(p(5,3),.road),(p(4,3),.road),(p(3,2),.reservoir),(p(4,2),.field)])
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 3)
+        board[p(3,3)].infrastructure = .road
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 5)
+        board[p(4,2)].terrain = .wetland
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 5)
+        board[p(5,4)].terrain = .grass
+        board[p(6,4)].terrain = .water
+        board[p(5,4)].building = .field
+        XCTAssertEqual(Rules.evaluate(GameState(board: board)).totals.food, 8)
+    }
+
+    func testClearingLastWoodlandDisablesCampButRemainsAValidSave() throws {
+        var campaign = try SolutionFixture.completed()
+        try campaign.startLevel(9)
+        try campaign.apply(.place(.lumberCamp, p(3,2)))
+        try campaign.apply(.clearWoodland(p(3,1)))
+        XCTAssertNotNil(Rules.terrainError(.lumberCamp, at: p(3,2), on: campaign.current.board))
+        try campaign.validate()
+        campaign.restartLevel()
+        campaign.current.board[p(3,0)].building = .lumberCamp
+        campaign.current.budget -= Balance.definition(for: .lumberCamp).cost
+        XCTAssertThrowsError(try campaign.validate())
+    }
+
+    func testNotEnoughCoinsCannotMutatePlan() throws {
+        var campaign = Campaign(current: GameState(budget: 0))
+        let before = campaign
+        XCTAssertThrowsError(try campaign.apply(.place(.road, p(5,3))))
+        XCTAssertEqual(campaign, before)
+    }
+
+    func testFailedDispatchDoesNotUnlockOrAwardStars() throws {
+        var campaign = Campaign.new
+        try campaign.apply(.place(.orchard, p(4,3)))
+        XCTAssertFalse(campaign.dispatch().meetsOrder)
+        XCTAssertEqual(campaign.currentStars, 0)
+        XCTAssertEqual(campaign.highestUnlockedIndex, 0)
+        XCTAssertTrue(campaign.records.isEmpty)
+        XCTAssertThrowsError(try campaign.advance())
+        try campaign.validate()
+    }
+
+    func testMalformedSavedResultsAndSkippedUnlocksAreRejected() throws {
+        var campaign = Campaign.new
+        try applyFixture(0, to: &campaign)
+        campaign.dispatch()
+        var bad = campaign
+        bad.current.evaluation?.totals.food += 1
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign
+        bad.records = [LevelRecord(levelIndex: 1, stars: 3, spentCoins: 6)]
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign
+        bad.current.board[p(5,3)].building = .orchard
+        XCTAssertThrowsError(try bad.validate())
+        bad = campaign
+        bad.records.removeAll()
+        XCTAssertThrowsError(try bad.validate())
+    }
+
+    func testRouteSearchMatchesExhaustiveSimplePathsOnEverySmallNetwork() {
+        let cells = [p(5,2),p(5,3),p(5,4),p(6,2),p(6,4),p(4,3)]
+        for configuration in 0..<729 {
+            var board = customBoard([], pieces: [])
+            var value = configuration
+            for cell in cells {
+                let kind = value % 3; value /= 3
+                if kind > 0 {
+                    board[cell].terrain = kind == 1 ? .grass : .water
+                    board[cell].infrastructure = kind == 1 ? .road : .bridge
+                }
+            }
+            let actual = Rules.routes(on: board)
+            for start in cells where board[start].infrastructure != nil {
+                var shortest: Int?
+                func visit(_ position: Position, seen: Set<Position>, hasRoad: Bool) {
+                    if let shortest, seen.count >= shortest { return }
+                    for next in position.neighbors where !seen.contains(next) {
+                        if next == board.depot {
+                            if hasRoad { shortest = seen.count + 1 }
+                        } else if let piece = board[next].infrastructure {
+                            visit(next, seen: seen.union([next]), hasRoad: hasRoad || piece == .road)
+                        }
+                    }
+                }
+                visit(start, seen: [start], hasRoad: board[start].infrastructure == .road)
+                XCTAssertEqual(actual[start]?.count, shortest, "Network \(configuration), tile \(start.label)")
             }
         }
     }
 
-    func testDiagonalRoadContactDoesNotConnect() throws {
-        var journey = Journey.new
-        try journey.apply(.place(.road, p(5, 3)))
-        try journey.apply(.place(.road, p(5, 2)))
-        try journey.apply(.place(.quarry, p(4, 1)))
-        let result = journey.dispatch()
-        XCTAssertEqual(result.totals.stone, 0)
-        XCTAssertEqual(result.producers.first?.route, [])
-        XCTAssertFalse(result.producers.first!.connected)
-    }
-
-    func testProducerDirectlyBesideDepotConnects() throws {
-        var journey = Journey.new
-        try journey.apply(.place(.orchard, p(6, 2)))
-        let result = journey.dispatch()
-        XCTAssertEqual(result.totals.food, 3)
-        XCTAssertEqual(result.producers.first?.route, [p(6, 2), p(6, 3)])
-    }
-
-    func testBuildingsDoNotActAsRoads() throws {
-        var journey = Journey.new
-        try journey.apply(.place(.orchard, p(5, 3)))
-        try journey.apply(.place(.orchard, p(4, 3)))
-        let result = journey.dispatch()
-        XCTAssertEqual(result.totals.food, 3)
-        XCTAssertFalse(result.producers.first(where: { $0.position == p(4, 3) })!.connected)
-    }
-
-    func testInvalidPlacementSpendsNothingAndDoesNotCreateUndo() throws {
-        var journey = Journey.new
-        let before = journey
-        XCTAssertThrowsError(try journey.apply(.place(.quarry, p(5, 3))))
-        XCTAssertEqual(journey, before)
-        XCTAssertThrowsError(try journey.apply(.place(.road, p(0, 0))))
-        XCTAssertEqual(journey, before)
-        XCTAssertThrowsError(try journey.apply(.place(.road, p(6, 3))))
-        XCTAssertEqual(journey, before)
-    }
-
-    func testWaterCrossingNeedsBridgeAndBridgePersists() throws {
-        var board = Board.initial
-        board[p(5, 3)].terrain = .water
-        board[p(4, 3)].terrain = .stone
-        var journey = Journey(current: GameState(board: board))
-        XCTAssertThrowsError(try journey.apply(.place(.road, p(5, 3))))
-        try journey.apply(.place(.bridge, p(5, 3)))
-        try journey.apply(.place(.quarry, p(4, 3)))
-        XCTAssertEqual(journey.dispatch().totals.stone, 4)
-        let future = Rules.transformedBoard(journey.current)
-        XCTAssertEqual(future[p(5, 3)].terrain, .water)
-        XCTAssertEqual(future[p(5, 3)].infrastructure, .bridge)
-        XCTAssertTrue(future[p(5, 3)].inheritedInfrastructure)
-    }
-
-    func testRepeatedDispatchNeverAccumulatesGoods() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        let once = journey.dispatch()
-        let budget = journey.current.budget
-        for _ in 0..<20 { XCTAssertEqual(journey.dispatch(), once) }
-        XCTAssertEqual(journey.current.budget, budget)
-        XCTAssertEqual(journey.current.evaluation?.totals, Resources(stone: 4, food: 6))
-    }
-
-    func testEditingInvalidatesSuccessfulDispatchAndUndoRestoresIt() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        journey.dispatch()
-        let before = journey.current
-        XCTAssertTrue(before.canAdvance)
-        try journey.apply(.place(.road, p(1, 3)))
-        XCTAssertNil(journey.current.evaluation)
-        XCTAssertFalse(journey.current.canAdvance)
-        XCTAssertThrowsError(try journey.advance())
-        XCTAssertTrue(journey.undo())
-        XCTAssertEqual(journey.current, before)
-        XCTAssertTrue(journey.current.canAdvance)
-    }
-
-    func testTransformationsPreserveCoordinatesAndUnconnectedStructuresLeaveNoLegacy() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        try journey.apply(.place(.orchard, p(1, 2)))
-        let future = Rules.transformedBoard(journey.current)
-        XCTAssertEqual(future[p(4, 1)].terrain, .water)
-        XCTAssertEqual(future[p(2, 2)].terrain, .woodland)
-        XCTAssertEqual(future[p(4, 4)].terrain, .woodland)
-        XCTAssertEqual(future[p(1, 2)].terrain, .grass)
-        XCTAssertNil(future[p(1, 2)].building)
-        XCTAssertEqual(future[p(4, 5)].terrain, .stone)
-        XCTAssertEqual(future.depot, journey.current.board.depot)
-    }
-
-    func testConnectedSurplusProducerCreatesLegacy() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        try journey.apply(.place(.orchard, p(3, 4)))
-        XCTAssertEqual(journey.dispatch().totals.food, 9)
-        try journey.advance()
-        XCTAssertEqual(journey.current.board[p(3, 4)].terrain, .woodland)
-    }
-
-    func testPreviewIsReadOnlyAndMatchesActualAdvancement() throws {
-        var journey = Journey.new
-        for era in 0..<3 {
-            try applyFixture(era, to: &journey)
-            let before = journey
-            let preview = Rules.transformedBoard(journey.current)
-            XCTAssertEqual(journey, before)
-            XCTAssertTrue(journey.dispatch().meetsOrder)
-            try journey.advance()
-            XCTAssertEqual(journey.current.board, preview)
-        }
-        XCTAssertTrue(journey.finished)
-    }
-
-    func testRoadStrokeHasOneUndoAndRestoresWholeState() throws {
-        var journey = Journey.new
-        journey.current.tutorialProgress = 2
-        let before = journey.current
-        try journey.applyRoadStroke([p(5, 3), p(4, 3), p(3, 3)])
-        XCTAssertEqual(journey.undoHistory.count, 1)
-        XCTAssertEqual(journey.current.budget, before.budget - 3)
-        XCTAssertEqual(journey.current.revision, before.revision + 1)
-        XCTAssertTrue(journey.undo())
-        XCTAssertEqual(journey.current, before)
-    }
-
-    func testBlockedAndDiagonalRoadGesturesSpendNothing() throws {
-        var journey = Journey.new
-        let before = journey
-        XCTAssertThrowsError(try journey.applyRoadStroke([p(2, 0), p(1, 0)]))
-        XCTAssertEqual(journey, before)
-        XCTAssertThrowsError(try journey.applyRoadStroke([p(5, 3), p(4, 2)]))
-        XCTAssertEqual(journey, before)
-    }
-
-    func testRemovingUncommittedPieceRefundsAndInheritedRouteCostsOne() throws {
-        var journey = Journey.new
-        let initialBudget = journey.current.budget
-        try journey.apply(.place(.orchard, p(6, 2)))
-        try journey.apply(.remove(p(6, 2)))
-        XCTAssertEqual(journey.current.budget, initialBudget)
-        journey = try eraTwo()
-        let before = journey.current
-        try journey.apply(.remove(p(4, 2)))
-        XCTAssertEqual(journey.current.budget, before.budget - Balance.inheritedRemovalCost)
-        XCTAssertNil(journey.current.board[p(4, 2)].infrastructure)
-        journey.undo()
-        XCTAssertEqual(journey.current, before)
-    }
-
-    func testClearingCostsConstructionAndNeverCreatesTimber() throws {
-        var journey = try eraTwo()
-        let before = journey.current
-        try journey.apply(.clearWoodland(p(2, 2)))
-        XCTAssertEqual(journey.current.board[p(2, 2)].terrain, .grass)
-        XCTAssertEqual(journey.current.budget, before.budget - 2)
-        XCTAssertEqual(journey.dispatch().totals.timber, 0)
-        journey.undo()
-        XCTAssertEqual(journey.current, before)
-    }
-
-    func testFieldPreservesWetlandAndBonusesDoNotStack() throws {
-        var journey = try eraTwo()
-        try applyFixture(1, to: &journey)
-        let result = journey.dispatch()
-        XCTAssertEqual(result.totals.food, 10)
-        try journey.advance()
-        XCTAssertEqual(journey.current.board[p(3, 1)].terrain, .wetland)
-        try journey.apply(.place(.field, p(3, 1)))
-        XCTAssertEqual(journey.dispatch().totals.food, 5)
-        XCTAssertEqual(Rules.transformedBoard(journey.current)[p(3, 1)].terrain, .wetland)
-
-        var state = journey.current
-        state.board[p(3, 0)].terrain = .water
-        state.board[p(2, 0)].building = .reservoir
-        for position in [p(2, 1), p(1, 1), p(1, 2), p(1, 3)] { state.board[position].infrastructure = .road }
-        state.board[p(2, 1)].terrain = .grass
-        XCTAssertEqual(Rules.evaluate(state).totals.food, 5)
-    }
-
-    func testDisconnectedReservoirCannotIrrigateOrCreateWetland() throws {
-        var journey = try eraTwo()
-        try journey.apply(.place(.reservoir, p(3, 1)))
-        try journey.apply(.place(.road, p(5, 2)))
-        try journey.apply(.place(.field, p(5, 1)))
-        XCTAssertEqual(journey.dispatch().totals.food, 3)
-        XCTAssertEqual(Rules.transformedBoard(journey.current)[p(3, 1)].terrain, .grass)
-    }
-
-    func testSaveLoadPreservesJourneyIncludingEvaluationCheckpointsAndUndo() throws {
-        var journey = try eraTwo()
-        try applyFixture(1, to: &journey)
-        journey.current.tutorialProgress = 4
-        journey.dispatch()
-        let data = try JSONEncoder().encode(journey)
-        var loaded = try JSONDecoder().decode(Journey.self, from: data)
-        XCTAssertEqual(loaded, journey)
-        try loaded.validate()
-        try loaded.advance()
-        XCTAssertEqual(loaded.current.eraIndex, 2)
-        XCTAssertEqual(loaded.current.board, Rules.transformedBoard(journey.current))
-    }
-
-    func testAdvancementOccursOnceEvenIfCalledAgainImmediately() throws {
-        var journey = Journey.new
-        try applyFixture(0, to: &journey)
-        journey.dispatch()
-        try journey.advance()
-        let after = journey
-        XCTAssertThrowsError(try journey.advance())
-        XCTAssertEqual(journey, after)
-        XCTAssertEqual(journey.current.eraIndex, 1)
-        XCTAssertEqual(journey.checkpoints.count, 2)
-    }
-
-    func testRestartAndRewindReturnToStartingCheckpoints() throws {
-        var journey = try eraTwo()
-        let startSecond = journey.current
-        try applyFixture(1, to: &journey)
-        journey.restartEra()
-        XCTAssertEqual(journey.current, startSecond)
-        XCTAssertEqual(journey.undoHistory, [])
-        try journey.rewind()
-        XCTAssertEqual(journey.current, GameState())
-        XCTAssertEqual(journey.checkpoints.count, 1)
-        XCTAssertFalse(journey.canRewind)
-    }
-
-    func testBothCompleteReproducibleThreeEraJourneys() throws {
-        for variant in 0...1 {
-            let journey = try SolutionFixture.completed(variant: variant)
-            XCTAssertTrue(journey.finished)
-            XCTAssertEqual(journey.eraResults.count, 3)
-            XCTAssertTrue(journey.eraResults.allSatisfy(\.meetsOrder))
-            XCTAssertEqual(journey.eraResults[0].totals, Resources(stone: 4, food: 6))
-            XCTAssertEqual(journey.eraResults[1].totals, Resources(food: 10, timber: 4))
-            XCTAssertEqual(journey.eraResults[2].totals, Resources(stone: 4, food: 8, timber: 8))
-            XCTAssertEqual(journey.current.budget, 4)
-            try journey.validate()
-            let saved = try JSONDecoder().decode(Journey.self, from: JSONEncoder().encode(journey))
-            XCTAssertEqual(saved, journey)
-        }
-    }
-
-    func testEarlyPlacementChangesLaterFieldAndLumberOpportunities() throws {
-        let west = try eraTwo()
-        let east = try eraTwo(variant: 1)
-        XCTAssertNotEqual(west.current.board, east.current.board)
-        XCTAssertNil(Rules.placementError(.field, at: p(5, 1), in: west.current))
-        XCTAssertNotNil(Rules.placementError(.field, at: p(5, 1), in: east.current))
-        XCTAssertNotNil(Rules.placementError(.field, at: p(5, 5), in: west.current))
-        XCTAssertNil(Rules.placementError(.field, at: p(5, 5), in: east.current))
-        XCTAssertNil(Rules.placementError(.lumberCamp, at: p(1, 2), in: west.current))
-        XCTAssertNotNil(Rules.placementError(.lumberCamp, at: p(1, 2), in: east.current))
-        XCTAssertEqual(west.current.board[p(4, 2)].infrastructure, .road)
-        XCTAssertNil(east.current.board[p(4, 2)].infrastructure)
-        XCTAssertEqual(east.current.board[p(4, 2)].terrain, .woodland)
-    }
-
-    func testMalformedDecodedBoardIsRejectedBeforeUse() throws {
-        var journey = Journey.new
-        journey.current.board.tiles.removeLast()
-        XCTAssertThrowsError(try journey.validate())
-        journey = Journey.new
-        journey.current.eraIndex = 9
-        XCTAssertThrowsError(try journey.validate())
-    }
 }

@@ -161,7 +161,7 @@ final class BoardScene: SKScene {
             case .stone: ground = odd ? UIColor(hex: 0xC6C6A6) : UIColor(hex: 0xBEBF9F)
             case .water: ground = IslandColors.water
             case .wetland: ground = IslandColors.wetland
-            case .cliff: ground = odd ? UIColor(hex: 0xA4AA94) : UIColor(hex: 0x9EA68F)
+            case .cliff: ground = odd ? UIColor(hex: 0xADB39F) : UIColor(hex: 0xA7AF99)
             }
             let tile = IslandArt.rect(node, x: 0, y: 0, w: 99.4, h: 99.4,
                                       radius: 3, color: ground)
@@ -170,16 +170,19 @@ final class BoardScene: SKScene {
             switch cell.terrain {
             case .cliff:
                 let shift = CGFloat((cell.point.row + cell.point.col) % 3 - 1) * 7
-                IslandArt.polygon(node, points: [
+                let crag = SKNode()
+                crag.setScale(0.75)
+                node.addChild(crag)
+                IslandArt.polygon(crag, points: [
                     .init(x: -37, y: -24), .init(x: -31, y: 7), .init(x: -7 + shift, y: 32),
                     .init(x: 18, y: 24), .init(x: 39, y: -10), .init(x: 27, y: -28)
-                ], color: UIColor(hex: 0x7F8B79))
-                IslandArt.polygon(node, points: [
+                ], color: UIColor(hex: 0x8F9B85))
+                IslandArt.polygon(crag, points: [
                     .init(x: -31, y: 7), .init(x: -7 + shift, y: 32), .init(x: 18, y: 24),
                     .init(x: 4, y: 3), .init(x: -14, y: -1)
-                ], color: UIColor(hex: 0xAEB49E))
-                IslandArt.line(node, points: [.init(x: 4, y: 3), .init(x: 12, y: -15), .init(x: 27, y: -28)],
-                               color: UIColor(hex: 0x6C7A69).withAlphaComponent(0.6), width: 2)
+                ], color: UIColor(hex: 0xBAC2AA))
+                IslandArt.line(crag, points: [.init(x: 4, y: 3), .init(x: 12, y: -15), .init(x: 27, y: -28)],
+                               color: UIColor(hex: 0x77866F).withAlphaComponent(0.5), width: 2)
             case .grass:
                 grassDetails(node, point: cell.point)
             case .stone:
