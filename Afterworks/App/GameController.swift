@@ -39,7 +39,11 @@ final class GameController: ObservableObject {
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
+        #if DEBUG
         let testing = arguments.contains("--uitesting")
+        #else
+        let testing = false
+        #endif
         store = CampaignStore(testing: testing)
         if testing && (arguments.contains("--reset-progress") || arguments.contains("--reset-journey")) {
             try? store.resetTestingData()
@@ -49,7 +53,7 @@ final class GameController: ObservableObject {
                 campaign = loaded.save.campaign
                 settings = loaded.save.settings
                 if loaded.importedSettings {
-                    migrationNotice = "A fresh set of 12 puzzles. Your earlier island save is preserved."
+                    migrationNotice = "A fresh set of \(Balance.levels.count) puzzles. Your earlier island save is preserved."
                     do { try store.save(loaded.save) }
                     catch { saveError = "Could not save the new campaign: \(error.localizedDescription)" }
                 }
@@ -58,6 +62,26 @@ final class GameController: ObservableObject {
             saveError = "Could not open your progress. \(error.localizedDescription)"
             hasUnreadableSave = true
         }
+        #if DEBUG
+        if testing, let argumentIndex = arguments.firstIndex(of: "--ui-start-level"),
+           arguments.indices.contains(argumentIndex + 1),
+           let levelNumber = Int(arguments[argumentIndex + 1]),
+           Balance.levels.indices.contains(levelNumber - 1) {
+            do {
+                var prepared = Campaign.new
+                for index in 0..<(levelNumber - 1) {
+                    for action in SolutionFixture.primary[index] { try prepared.apply(action) }
+                    guard prepared.dispatch().meetsOrder else { throw GameError("Test setup could not complete level \(index + 1).") }
+                    try prepared.advance()
+                }
+                try prepared.validate()
+                campaign = prepared
+                hasUnreadableSave = false
+                saveError = nil
+                try store.save(SavedCampaign(campaign: prepared, settings: settings))
+            } catch { saveError = "Could not prepare the test level: \(error.localizedDescription)" }
+        }
+        #endif
         scene.onTap = { [weak self] point in self?.tap(Position(row: point.row, col: point.col)) }
         scene.onRoadStroke = { [weak self] points in
             self?.roadStroke(points.map { Position(row: $0.row, col: $0.col) })

@@ -4,6 +4,7 @@ DerivedData/
 artifacts/*
 !artifacts/verification.md
 !artifacts/campaign-verification.md
+!artifacts/100-level-verification.md
 !artifacts/screenshots/
 !artifacts/screenshots/**
 xcuserdata/

@@ -63,5 +63,5 @@ public enum Balance {
         }
     }
 
-    public static let levels: [LevelDefinition] = AuthoredLevels.make()
+    public static let levels: [LevelDefinition] = AuthoredLevels.make() + ExpandedLevels.levels
 }

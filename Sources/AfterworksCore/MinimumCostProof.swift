@@ -11,6 +11,12 @@ public struct MinimumCostCertificate: Equatable, Sendable {
     public var proven: Bool { fixtureCost == claimedMinimum && cheaperCompletion == nil }
 }
 
+public struct MinimumCostSolution: Sendable {
+    public let spentCoins: Int
+    public let actions: [GameAction]
+    public let checkedNetworks: Int
+}
+
 public enum MinimumCostProof {
     /// Exhausts every cheaper connected infrastructure network, every useful woodland
     /// clearing, every reservoir site, and every eligible assignment of producers.
@@ -28,9 +34,24 @@ public enum MinimumCostProof {
         var fixture = Campaign(current: GameState(levelIndex: levelIndex))
         for action in SolutionFixture.actions(forLevel: levelIndex) { try fixture.apply(action) }
         guard fixture.dispatch().meetsOrder else { throw GameError("The authored solution does not complete its order.") }
-        let ceiling = level.minimumCoins - 1
+        let search = try search(level: level, ceiling: level.minimumCoins - 1, stopAfterFirst: true, networkLimit: nil)
+        return MinimumCostCertificate(levelIndex: levelIndex, claimedMinimum: level.minimumCoins,
+                                      fixtureCost: fixture.current.spentCoins, checkedNetworks: search.checked,
+                                      cheaperCompletion: search.solution?.spentCoins)
+    }
+
+    /// Offline catalog tooling only. The shipping game reads bundled maps and never calls this search.
+    /// A bounded search throws instead of returning an unproven optimum if its work limit is reached.
+    public static func solve(level: LevelDefinition, maximumCoins: Int, networkLimit: Int = 250_000) throws -> MinimumCostSolution? {
+        guard level.limit(for: .reservoir) <= 1 else { throw GameError("The solver supports at most one reservoir.") }
+        let result = try search(level: level, ceiling: maximumCoins, stopAfterFirst: false, networkLimit: networkLimit)
+        guard let solution = result.solution else { return nil }
+        return MinimumCostSolution(spentCoins: solution.spentCoins, actions: solution.actions, checkedNetworks: result.checked)
+    }
+
+    private static func search(level: LevelDefinition, ceiling initialCeiling: Int, stopAfterFirst: Bool,
+                               networkLimit: Int?) throws -> (solution: MinimumCostSolution?, checked: Int) {
         let producerFloor = optimisticProducerCost(level)
-        let networkCeiling = ceiling - producerFloor
         let depot = level.initialBoard.depot
         let depotMask = bit(depot)
         let woods = Board.positions.filter { level.initialBoard[$0].terrain == .woodland }
@@ -49,19 +70,28 @@ public enum MinimumCostProof {
         }
         var seen: Set<UInt64> = [depotMask]
         var checked = 0
-        var cheaper: Int?
-        func search(_ network: UInt64, cost: Int, roads: Int, bridges: Int) {
-            guard cheaper == nil else { return }
+        var best: MinimumCostSolution?
+        var ceiling = initialCeiling
+        let orderedCandidates = candidates.keys.sorted()
+        func visit(_ network: UInt64, cost: Int, roads: Int, bridges: Int) throws {
+            if stopAfterFirst && best != nil { return }
+            guard cost + producerFloor <= ceiling else { return }
             checked += 1
+            if let networkLimit, checked > networkLimit { throw GameError("Exact search exceeded its network limit.") }
             if roads > 0 {
                 var board = level.initialBoard
-                for (position, info) in candidates where network & bit(position) != 0 {
-                    if board[position].terrain == .woodland { board[position].terrain = .grass }
-                    board[position].infrastructure = info.piece
+                var networkActions: [GameAction] = []
+                for position in orderedCandidates where network & bit(position) != 0 {
+                    if board[position].terrain == .woodland {
+                        board[position].terrain = .grass
+                        networkActions.append(.clearWoodland(position))
+                    }
+                    let piece = candidates[position]!.piece
+                    board[position].infrastructure = piece
+                    networkActions.append(.place(piece, position))
                 }
                 let networkWoods = network & woodlandMask
-                // A woodland can be cleared for a producer or to open an otherwise
-                // unusable site; enumerate all such choices before checking camps.
+                // Enumerating clearing before production preserves woodland dependencies.
                 for clearing in 0..<(1 << woods.count) {
                     var clearMask: UInt64 = 0
                     for index in woods.indices where clearing & (1 << index) != 0 { clearMask |= bit(woods[index]) }
@@ -69,14 +99,18 @@ public enum MinimumCostProof {
                     let totalBase = cost + clearMask.nonzeroBitCount * Balance.clearingCost
                     guard totalBase + producerFloor <= ceiling else { continue }
                     var cleared = board
-                    for position in woods where clearMask & bit(position) != 0 { cleared[position].terrain = .grass }
+                    var actions = networkActions
+                    for position in woods where clearMask & bit(position) != 0 {
+                        cleared[position].terrain = .grass
+                        actions.append(.clearWoodland(position))
+                    }
                     let paths = Rules.routes(on: cleared)
                     let sites = Board.positions.filter {
                         $0 != depot && cleared[$0].infrastructure == nil &&
                         $0.neighbors.contains(where: { paths[$0] != nil })
                     }
                     var reservoirSites: [Position?] = [nil]
-                    if level.availablePieces.contains(.reservoir) && level.limit(for: .reservoir) > 0 {
+                    if level.limit(for: .reservoir) > 0 {
                         reservoirSites += sites.filter { Rules.terrainError(.reservoir, at: $0, on: cleared) == nil }.map(Optional.some)
                     }
                     for reservoir in reservoirSites {
@@ -84,13 +118,18 @@ public enum MinimumCostProof {
                         guard base < ceiling else { continue }
                         if let production = cheapestProduction(on: cleared, sites: sites, reservoir: reservoir,
                                                                level: level, maximumCost: ceiling - base) {
-                            cheaper = base + production
-                            return
+                            let reservoirAction = reservoir.map { [GameAction.place(.reservoir, $0)] } ?? []
+                            let found = MinimumCostSolution(spentCoins: base + production.cost,
+                                                            actions: actions + reservoirAction + production.actions,
+                                                            checkedNetworks: checked)
+                            best = found
+                            if stopAfterFirst { return }
+                            ceiling = found.spentCoins - 1
                         }
                     }
                 }
             }
-            guard cost < networkCeiling else { return }
+            guard cost < ceiling - producerFloor else { return }
             var frontier: Set<Position> = []
             for position in Board.positions where network & bit(position) != 0 {
                 for neighbor in position.neighbors where network & bit(neighbor) == 0 && candidates[neighbor] != nil {
@@ -102,17 +141,15 @@ public enum MinimumCostProof {
                 let nextCost = cost + info.cost
                 let nextRoads = roads + (info.piece == .road ? 1 : 0)
                 let nextBridges = bridges + (info.piece == .bridge ? 1 : 0)
-                guard nextCost <= networkCeiling, nextRoads <= level.limit(for: .road),
+                guard nextCost <= ceiling - producerFloor, nextRoads <= level.limit(for: .road),
                       nextBridges <= level.limit(for: .bridge) else { continue }
                 let next = network | bit(position)
                 guard seen.insert(next).inserted else { continue }
-                search(next, cost: nextCost, roads: nextRoads, bridges: nextBridges)
+                try visit(next, cost: nextCost, roads: nextRoads, bridges: nextBridges)
             }
         }
-        if networkCeiling >= 0 { search(depotMask, cost: 0, roads: 0, bridges: 0) }
-        return MinimumCostCertificate(levelIndex: levelIndex, claimedMinimum: level.minimumCoins,
-                                      fixtureCost: fixture.current.spentCoins, checkedNetworks: checked,
-                                      cheaperCompletion: cheaper)
+        if ceiling >= producerFloor { try visit(depotMask, cost: 0, roads: 0, bridges: 0) }
+        return (best, checked)
     }
 
     private static func requiredCount(_ amount: Int, output: Int) -> Int { (amount + output - 1) / output }
@@ -143,6 +180,7 @@ public enum MinimumCostProof {
         var camps = 0
         var fields = 0
         var food = 0
+        var ordering: Int { (quarries << 32) | (orchards << 24) | (camps << 16) | (fields << 8) | food }
         var cost: Int {
             quarries * Balance.definition(for: .quarry).cost + orchards * Balance.definition(for: .orchard).cost +
             camps * Balance.definition(for: .lumberCamp).cost + fields * Balance.definition(for: .field).cost
@@ -150,16 +188,27 @@ public enum MinimumCostProof {
     }
 
     private static func cheapestProduction(on board: Board, sites: [Position], reservoir: Position?,
-                                           level: LevelDefinition, maximumCost: Int) -> Int? {
-        var states: Set<Production> = [Production()]
+                                           level: LevelDefinition, maximumCost: Int) -> (cost: Int, actions: [GameAction])? {
+        var states: [Production: [GameAction]] = [Production(): []]
         let quarriesNeeded = requiredCount(level.order.stone, output: Balance.definition(for: .quarry).output)
         let campsNeeded = requiredCount(level.order.timber, output: Balance.definition(for: .lumberCamp).output)
-        for site in sites where site != reservoir {
-            let choices = level.availablePieces.filter {
+        let choicesBySite = sites.filter { $0 != reservoir }.map { site in
+            (site, level.availablePieces.filter {
                 !$0.isInfrastructure && $0 != .reservoir && Rules.terrainError($0, at: site, on: board) == nil
-            }
+            })
+        }
+        // Independent capacity bounds deliberately ignore competition for cells.
+        // They discard impossible reservoir/clearing choices before assignment DP.
+        guard choicesBySite.filter({ $0.1.contains(.quarry) }).count >= quarriesNeeded,
+              choicesBySite.filter({ $0.1.contains(.lumberCamp) }).count >= campsNeeded else { return nil }
+        let orchardCapacity = min(level.limit(for: .orchard), choicesBySite.filter { $0.1.contains(.orchard) }.count) * Balance.definition(for: .orchard).output
+        let fieldOutputs = choicesBySite.filter { $0.1.contains(.field) }.map { site, _ in
+            Balance.definition(for: .field).output + ((board[site].terrain == .wetland || reservoir.map { $0.distance(to: site) <= Balance.reservoirRadius } == true) ? Balance.fieldBonus : 0)
+        }.sorted(by: >)
+        guard orchardCapacity + fieldOutputs.prefix(level.limit(for: .field)).reduce(0, +) >= level.order.food else { return nil }
+        for (site, choices) in choicesBySite {
             var next = states
-            for state in states {
+            for (state, previousActions) in states.sorted(by: { $0.key.ordering < $1.key.ordering }) {
                 for piece in choices {
                     var candidate = state
                     switch piece {
@@ -181,11 +230,16 @@ public enum MinimumCostProof {
                     default: continue
                     }
                     guard candidate.cost <= maximumCost else { continue }
-                    next.insert(candidate)
+                    if next[candidate] == nil { next[candidate] = previousActions + [.place(piece, site)] }
                 }
             }
             states = next
         }
-        return states.filter { $0.quarries == quarriesNeeded && $0.camps == campsNeeded && $0.food >= level.order.food }.map(\.cost).min()
+        guard let result = states.filter({ $0.key.quarries == quarriesNeeded && $0.key.camps == campsNeeded && $0.key.food >= level.order.food })
+            .min(by: { lhs, rhs in
+                if lhs.key.cost != rhs.key.cost { return lhs.key.cost < rhs.key.cost }
+                return lhs.key.ordering < rhs.key.ordering
+            }) else { return nil }
+        return (result.key.cost, result.value)
     }
 }

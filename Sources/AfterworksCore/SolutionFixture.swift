@@ -17,7 +17,7 @@ public enum SolutionFixture {
         [.clearWoodland(p(4,3))] + roads([(5,3),(4,3),(3,3)]) + [.place(.lumberCamp, p(3,2)), .place(.lumberCamp, p(3,4)), .place(.field, p(4,2)), .place(.field, p(4,4))],
         roads([(5,3),(3,3),(2,3)]) + [.place(.bridge, p(4,3)), .place(.quarry, p(3,2)), .place(.lumberCamp, p(3,4)), .place(.reservoir, p(1,3)), .place(.field, p(2,2)), .place(.field, p(2,4))],
         [.clearWoodland(p(4,3))] + roads([(5,3),(4,3),(3,3),(2,3),(2,2),(2,4)]) + [.place(.bridge, p(3,4)), .place(.quarry, p(2,1)), .place(.lumberCamp, p(2,5)), .place(.reservoir, p(1,4)), .place(.field, p(1,2)), .place(.field, p(1,3)), .place(.field, p(3,5))]
-    ]
+    ] + ExpandedLevels.solutions
 
     public static func actions(forLevel index: Int) -> [GameAction] { primary.indices.contains(index) ? primary[index] : [] }
     public static func completed() throws -> Campaign {

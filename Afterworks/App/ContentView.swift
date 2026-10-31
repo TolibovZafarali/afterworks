@@ -70,9 +70,9 @@ struct ContentView: View {
                 }.frame(minHeight: 34)
             }.accessibilityLabel("All levels").accessibilityIdentifier("levels-header")
             Spacer()
-            Text("LEVEL \(game.state.levelIndex + 1) / 12")
+            Text("LEVEL \(game.state.levelIndex + 1) / \(Balance.levels.count)")
                 .font(.system(size: 9, weight: .bold)).tracking(0.7)
-                .accessibilityLabel("Level \(game.state.levelIndex + 1) of 12")
+                .accessibilityLabel("Level \(game.state.levelIndex + 1) of \(Balance.levels.count)")
                 .accessibilityIdentifier("level-number")
             Button { game.sheet = .menu } label: {
                 Image(systemName: "line.3.horizontal").font(.system(size: 18)).frame(width: 40, height: 34)
@@ -221,6 +221,7 @@ struct ContentView: View {
                 }
             }.padding(.horizontal, 18)
         }.frame(height: 70).disabled(game.isAnimating)
+            .accessibilityIdentifier("building-tray-scroll")
     }
 
     private var dispatchButton: some View {
@@ -241,6 +242,25 @@ struct LevelMapView: View {
     @State private var pendingLevel: Int?
     @State private var confirmSwitch = false
     @State private var confirmRecovery = false
+    @State private var selectedChapter: Int?
+
+    private let levelsPerChapter = 10
+    private var maximumStars: Int { Balance.levels.count * 3 }
+    private var chapterCount: Int { (Balance.levels.count + levelsPerChapter - 1) / levelsPerChapter }
+    private var chapterIndex: Int { selectedChapter ?? game.state.levelIndex / levelsPerChapter }
+    private var chapterLevels: [LevelDefinition] {
+        Array(Balance.levels.dropFirst(chapterIndex * levelsPerChapter).prefix(levelsPerChapter))
+    }
+    private var chapterStars: Int { chapterLevels.reduce(0) { $0 + game.bestStars(for: $1.index) } }
+    private var introduction: String {
+        if game.totalStars == maximumStars {
+            return "All \(Balance.levels.count) islands. All \(maximumStars) stars. Revisit a favorite and enjoy another clever connection."
+        }
+        if game.campaign.isComplete {
+            return "All \(Balance.levels.count) islands delivered. Find a thriftier route and collect every star."
+        }
+        return "\(Balance.levels.count) small islands. Complete each order with fewer gold coins. Every island starts fresh."
+    }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -254,12 +274,12 @@ struct LevelMapView: View {
                         Spacer()
                         VStack(spacing: 5) {
                             Image(systemName: "star.fill").font(.system(size: 24)).foregroundStyle(Palette.gold)
-                            Text("\(game.totalStars) / 36").font(.system(size: 13, weight: .bold, design: .rounded)).monospacedDigit()
+                            Text("\(game.totalStars) / \(maximumStars)").font(.system(size: 13, weight: .bold, design: .rounded)).monospacedDigit()
                         }
-                        .accessibilityElement(children: .ignore).accessibilityLabel("\(game.totalStars) of 36 stars").accessibilityIdentifier("total-stars")
+                        .accessibilityElement(children: .ignore).accessibilityLabel("\(game.totalStars) of \(maximumStars) stars").accessibilityIdentifier("total-stars")
                     }
                 }
-                Text(game.totalStars == 36 ? "All twelve islands. All 36 stars. Revisit a favorite and enjoy another clever connection." : game.campaign.isComplete ? "All twelve islands delivered. Find a thriftier route and collect every star." : "Complete the order. Spend fewer gold coins. Each island starts fresh.")
+                Text(introduction)
                     .font(.system(size: 14)).foregroundStyle(Palette.secondary).lineSpacing(3)
                 if let notice = game.migrationNotice {
                     Text(notice).font(.footnote).foregroundStyle(Palette.secondary)
@@ -285,9 +305,16 @@ struct LevelMapView: View {
                     }.buttonStyle(PaperButtonStyle(filled: true)).disabled(game.hasUnreadableSave)
                         .accessibilityIdentifier("continue")
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 12) {
-                    ForEach(Balance.levels, id: \.index) { level in
-                        levelButton(level)
+                VStack(alignment: .leading, spacing: 13) {
+                    chapterNavigation
+                    if let first = chapterLevels.first, !game.isUnlocked(first.index), !game.hasUnreadableSave {
+                        Text("Complete level \(first.index) to open this chapter.")
+                            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                    }
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 12) {
+                        ForEach(chapterLevels, id: \.index) { level in
+                            levelButton(level)
+                        }
                     }
                 }
                 HStack(alignment: .top, spacing: 9) {
@@ -298,6 +325,8 @@ struct LevelMapView: View {
             }.padding(22).padding(.top, inSheet ? 0 : 12).padding(.bottom, 12)
         }
         .background(Palette.paper)
+        .accessibilityIdentifier("level-map-scroll")
+        .onChange(of: game.state.levelIndex) { _, _ in selectedChapter = nil }
         .confirmationDialog("Switch levels?", isPresented: $confirmSwitch, titleVisibility: .visible) {
             Button("Switch level") {
                 if let index = pendingLevel { game.startLevel(index) }
@@ -312,6 +341,64 @@ struct LevelMapView: View {
             Button("Keep current file", role: .cancel) { }
         } message: {
             Text("The unreadable file will be kept separately before new progress is created. Its stars cannot be loaded into this new campaign.")
+        }
+    }
+
+    private func chapterRange(_ index: Int) -> String {
+        let first = index * levelsPerChapter + 1
+        let last = min((index + 1) * levelsPerChapter, Balance.levels.count)
+        return "\(first)–\(last)"
+    }
+
+    private var chapterNavigation: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Chapter \(chapterIndex + 1)")
+                    .font(.custom("Georgia", fixedSize: 23))
+                    .accessibilityLabel("Chapter \(chapterIndex + 1) of \(chapterCount)")
+                    .accessibilityIdentifier("chapter-title")
+                Spacer()
+                HStack(spacing: 5) {
+                    Image(systemName: "star.fill").foregroundStyle(Palette.gold)
+                    Text("\(chapterStars) / \(chapterLevels.count * 3)").monospacedDigit()
+                }.font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(chapterStars) of \(chapterLevels.count * 3) stars in this chapter")
+                    .accessibilityIdentifier("chapter-stars")
+            }
+            HStack(spacing: 9) {
+                Button { selectedChapter = chapterIndex - 1 } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 14, weight: .semibold))
+                        .frame(width: 44, height: 44).background(Palette.faint.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).disabled(chapterIndex == 0)
+                    .accessibilityLabel("Previous chapter").accessibilityIdentifier("previous-chapter")
+                Menu {
+                    ForEach(0..<chapterCount, id: \.self) { index in
+                        Button {
+                            selectedChapter = index
+                        } label: {
+                            if index == chapterIndex {
+                                Label("Chapter \(index + 1) · Levels \(chapterRange(index))", systemImage: "checkmark")
+                            } else {
+                                Text("Chapter \(index + 1) · Levels \(chapterRange(index))")
+                            }
+                        }.accessibilityIdentifier("chapter-\(index + 1)")
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Levels \(chapterRange(chapterIndex))")
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .semibold))
+                    }.font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Palette.faint.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                }.accessibilityLabel("Choose chapter, levels \(chapterRange(chapterIndex))")
+                    .accessibilityIdentifier("chapter-picker")
+                Button { selectedChapter = chapterIndex + 1 } label: {
+                    Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                        .frame(width: 44, height: 44).background(Palette.faint.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).disabled(chapterIndex == chapterCount - 1)
+                    .accessibilityLabel("Next chapter").accessibilityIdentifier("next-chapter")
+            }
         }
     }
 

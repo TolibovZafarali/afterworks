@@ -7,9 +7,9 @@ final class AfterworksCoreTests: XCTestCase {
         for action in SolutionFixture.primary[level] { try campaign.apply(action) }
     }
 
-    func testAllTwelveSolutionsAndIndependentFreshStarts() throws {
+    func testAllHundredSolutionsAndIndependentFreshStarts() throws {
         var campaign = Campaign.new
-        XCTAssertEqual(Balance.levels.count, 12)
+        XCTAssertEqual(Balance.levels.count, 100)
         for index in Balance.levels.indices {
             XCTAssertEqual(campaign.current.levelIndex, index)
             XCTAssertEqual(campaign.current.board, Balance.levels[index].initialBoard)
@@ -28,20 +28,29 @@ final class AfterworksCoreTests: XCTestCase {
                 XCTAssertTrue(producer.route.contains { campaign.current.board[$0].infrastructure == .road })
                 for (a, b) in zip(producer.route, producer.route.dropFirst()) { XCTAssertEqual(a.distance(to: b), 1) }
             }
-            if index < 11 { try campaign.advance() }
+            if index < Balance.levels.count - 1 { try campaign.advance() }
         }
-        XCTAssertEqual(campaign.totalStars, 36)
+        XCTAssertEqual(campaign.totalStars, 300)
         XCTAssertTrue(campaign.isComplete)
-        XCTAssertEqual(campaign.highestUnlockedIndex, 11)
+        XCTAssertEqual(campaign.highestUnlockedIndex, 99)
         XCTAssertThrowsError(try campaign.advance())
     }
 
-    func testExactMinimumCertificatesForAllTwelveLevels() throws {
+    func testExactMinimumCertificatesForAllHundredLevels() throws {
+        var totalNetworks = 0
+        var slowest = (level: 0, seconds: 0.0)
+        let began = Date()
         for index in Balance.levels.indices {
+            let start = Date()
             let certificate = try MinimumCostProof.verify(levelIndex: index)
-            print("Level \(index + 1): minimum \(certificate.claimedMinimum), checked \(certificate.checkedNetworks) networks, cheaper \(String(describing: certificate.cheaperCompletion))")
+            let elapsed = Date().timeIntervalSince(start)
+            totalNetworks += certificate.checkedNetworks
+            if elapsed > slowest.seconds { slowest = (index + 1, elapsed) }
+            print("Level \(index + 1): minimum \(certificate.claimedMinimum), checked \(certificate.checkedNetworks) networks, cheaper \(String(describing: certificate.cheaperCompletion)), \(String(format: "%.3f", elapsed))s")
             XCTAssertTrue(certificate.proven, "\(certificate)")
+            if index >= 12 { XCTAssertLessThanOrEqual(certificate.checkedNetworks, 20_000) }
         }
+        print("Certificates: \(totalNetworks) total networks in \(String(format: "%.3f", Date().timeIntervalSince(began)))s; slowest level \(slowest.level) at \(String(format: "%.3f", slowest.seconds))s")
     }
 
     func testDirectDepotAdjacencyNeedsAnActualRoadRoute() throws {
@@ -352,6 +361,122 @@ final class AfterworksCoreTests: XCTestCase {
                 XCTAssertEqual(actual[start]?.count, shortest, "Network \(configuration), tile \(start.label)")
             }
         }
+    }
+
+
+    func testOriginalTwelveDefinitionsAndOptimalActionsRemainIdentical() throws {
+        let expected = ["9d3c827be4f2bd68", "81474e0d41f2c309", "8f3b6b1ad5e290ee", "94414b82b6339137",
+                        "7017f8bdd4c50a6", "a54f7036c1f67f21", "2571947431dd7f34", "7dd13bb72cfc0d9a",
+                        "ca915355c74f7a9f", "c3f01e04e25c1c4a", "dd50adc27712b01d", "5f734c225c1729cb"]
+        for (index, level) in Balance.levels.prefix(12).enumerated() {
+            var value = "\(level.index)|\(level.title)|\(level.subtitle)|\(level.hint)|\(level.order.stone),\(level.order.food),\(level.order.timber)|\(level.budget)|\(level.minimumCoins)|\(level.twoStarCoins)|"
+            value += level.initialBoard.tiles.map { $0.terrain.rawValue }.joined(separator: ",")
+            value += "|" + level.availablePieces.map(\.rawValue).joined(separator: ",")
+            value += "|" + Piece.allCases.map { "\($0.rawValue):\(level.limit(for: $0))" }.joined(separator: ",")
+            let encoded = try JSONEncoder().encode(SolutionFixture.primary[index])
+            let object = try JSONSerialization.jsonObject(with: encoded)
+            let canonical = try JSONSerialization.data(withJSONObject: object, options: .sortedKeys)
+            value += "|" + String(data: canonical, encoding: .utf8)!
+            let hash = value.utf8.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+            XCTAssertEqual(String(hash, radix: 16), expected[index], "Original level \(index + 1) changed")
+            XCTAssertEqual(level.initialBoard.depot, p(6,3))
+        }
+    }
+
+    func testCompletedTwelveLevelSaveUnlocksThirteenWithoutResettingProgress() throws {
+        var legacy = Campaign.new
+        for index in 0..<12 {
+            try applyFixture(index, to: &legacy)
+            legacy.dispatch()
+            if index < 11 { try legacy.advance() }
+        }
+        let encoded = try JSONEncoder().encode(legacy)
+        var restored = try JSONDecoder().decode(Campaign.self, from: encoded)
+        try restored.validate()
+        XCTAssertEqual(Balance.saveVersion, 2)
+        XCTAssertEqual(restored.totalStars, 36)
+        XCTAssertEqual(restored.highestUnlockedIndex, 12)
+        XCTAssertFalse(restored.isComplete)
+        XCTAssertEqual(restored.current, legacy.current)
+        XCTAssertEqual(restored.undoHistory, legacy.undoHistory)
+        try restored.advance()
+        XCTAssertEqual(restored.current.levelIndex, 12)
+        XCTAssertEqual(restored.current.board, Balance.levels[12].initialBoard)
+        XCTAssertEqual(restored.records, legacy.records)
+    }
+
+    private func canonicalTopology(_ board: Board) -> String {
+        let usable = Set(Board.positions.filter { ![Terrain.cliff, .water].contains(board[$0].terrain) })
+        return (0..<8).map { transform in
+            var cells = Array(repeating: Character("."), count: 49)
+            for position in usable {
+                var row = position.row, col = position.col
+                if transform >= 4 { col = 6 - col }
+                for _ in 0..<(transform % 4) { let oldRow = row; row = col; col = 6 - oldRow }
+                cells[row * 7 + col] = "x"
+            }
+            return String(cells)
+        }.min()!
+    }
+
+    func testAppendedTopologiesAreUniqueUnderEveryRotationAndReflection() {
+        var signatures = Set(Balance.levels.prefix(12).map { canonicalTopology($0.initialBoard) })
+        for level in Balance.levels.dropFirst(12) {
+            XCTAssertTrue(signatures.insert(canonicalTopology(level.initialBoard)).inserted, "Repeated topology at level \(level.id)")
+        }
+        XCTAssertEqual(Set(Balance.levels.dropFirst(12).map { canonicalTopology($0.initialBoard) }).count, 88)
+        XCTAssertEqual(Set(Balance.levels.map(\.title)).count, 100)
+    }
+
+    func testExpansionDifficultyBandsIncreaseRequiredBuildingsAndCost() {
+        let bandCounts = [12, 16, 20, 20, 20]
+        let buildingCounts = [6, 6, 7, 8, 9]
+        let minimumCosts = [32, 35, 39, 44, 49]
+        var previousAverage = 0.0
+        for band in 0..<5 {
+            let entries = ExpandedLevels.entries.enumerated().filter { $0.element.band == band }
+            XCTAssertEqual(entries.count, bandCounts[band])
+            let average = Double(entries.reduce(0) { $0 + $1.element.minimum }) / Double(entries.count)
+            XCTAssertGreaterThan(average, previousAverage)
+            previousAverage = average
+            for (offset, entry) in entries {
+                let actions = SolutionFixture.primary[offset + 12]
+                let pieces = actions.compactMap { action -> Piece? in if case let .place(piece, _) = action { return piece }; return nil }
+                XCTAssertEqual(pieces.filter { !$0.isInfrastructure }.count, buildingCounts[band])
+                XCTAssertGreaterThanOrEqual(entry.minimum, minimumCosts[band])
+                XCTAssertGreaterThanOrEqual(pieces.filter { $0.isInfrastructure }.count, 4 + band)
+                XCTAssertGreaterThanOrEqual(pieces.filter { $0 == .bridge }.count, band == 4 ? 2 : 1)
+                XCTAssertTrue(actions.contains { if case .clearWoodland = $0 { return true }; return false })
+                XCTAssertEqual(pieces.contains(.reservoir), band != 1)
+                XCTAssertGreaterThan(entry.order[0], 0)
+                XCTAssertGreaterThan(entry.order[1], 0)
+                XCTAssertGreaterThan(entry.order[2], 0)
+                XCTAssertLessThanOrEqual(entry.networks, 20_000)
+            }
+        }
+    }
+
+    func testEveryLevelHasDistinctValidStarBands() {
+        for level in Balance.levels {
+            XCTAssertEqual(level.stars(forSpent: level.minimumCoins), 3)
+            XCTAssertEqual(level.stars(forSpent: level.minimumCoins + 1), 2)
+            XCTAssertEqual(level.stars(forSpent: level.twoStarCoins), 2)
+            XCTAssertEqual(level.stars(forSpent: level.twoStarCoins + 1), 1)
+            XCTAssertEqual(level.stars(forSpent: level.budget), 1)
+            XCTAssertEqual(level.stars(forSpent: level.budget + 1), 0)
+        }
+    }
+
+    func testOfflineSolverReturnsReproducibleOptimalWitnessAndRejectsIncompleteProof() throws {
+        let level = Balance.levels[3]
+        let first = try XCTUnwrap(MinimumCostProof.solve(level: level, maximumCoins: level.minimumCoins + 3))
+        let second = try XCTUnwrap(MinimumCostProof.solve(level: level, maximumCoins: level.minimumCoins + 3))
+        XCTAssertEqual(first.actions, second.actions)
+        XCTAssertEqual(first.spentCoins, level.minimumCoins)
+        var campaign = Campaign(current: GameState(levelIndex: level.index))
+        for action in first.actions { try campaign.apply(action) }
+        XCTAssertTrue(campaign.dispatch().meetsOrder)
+        XCTAssertThrowsError(try MinimumCostProof.solve(level: level, maximumCoins: level.minimumCoins, networkLimit: 0))
     }
 
 }

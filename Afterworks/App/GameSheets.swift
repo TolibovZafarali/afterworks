@@ -24,7 +24,7 @@ struct GameSheets: View {
                             case .levels: EmptyView()
                             }
                         }.padding(24).padding(.top, 5)
-                    }
+                    }.accessibilityIdentifier("game-sheet-scroll")
                 }
             }
             .background(Palette.paper).foregroundStyle(Palette.ink)
@@ -65,7 +65,7 @@ struct GameSheets: View {
 
     private var menu: some View {
         Group {
-            SheetHeading(eyebrow: "Level \(game.state.levelIndex + 1) of 12", title: "Take a breath.")
+            SheetHeading(eyebrow: "Level \(game.state.levelIndex + 1) of \(Balance.levels.count)", title: "Take a breath.")
             Text(game.saveError == nil ? "Your plan and best stars are saved on this device. Pick up exactly where you left off." : "Your plan and stars are available in this session. Save successfully to keep them for your next visit.")
                 .font(.subheadline).foregroundStyle(Palette.secondary)
             VStack(spacing: 0) {
@@ -261,7 +261,7 @@ struct GameSheets: View {
     private var result: some View {
         if let result = game.currentResult {
             let finalLevel = game.state.levelIndex == Balance.levels.count - 1
-            SheetHeading(eyebrow: "Level \(game.state.levelIndex + 1) complete", title: finalLevel ? "Twelve islands, delivered." : result.stars == 3 ? "Perfectly connected." : "Order delivered.")
+            SheetHeading(eyebrow: "Level \(game.state.levelIndex + 1) complete", title: finalLevel ? "\(Balance.levels.count) islands, delivered." : result.stars == 3 ? "Perfectly connected." : "Order delivered.")
                 .accessibilityIdentifier("level-complete")
             StarRating(stars: result.stars, size: 49).frame(maxWidth: .infinity).padding(.vertical, 14)
                 .accessibilityIdentifier("result-stars")
@@ -284,7 +284,7 @@ struct GameSheets: View {
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.moss)
             }
             if finalLevel {
-                note("YOUR COLLECTION", "\(game.totalStars) of 36 stars earned. Revisit any island to find an even better route.")
+                note("YOUR COLLECTION", "\(game.totalStars) of \(Balance.levels.count * 3) stars earned. \(game.totalStars == Balance.levels.count * 3 ? "Every star is yours. Revisit a favorite for another run." : "Revisit any island to find an even better route.")")
                 Button("Choose an island") { game.goHome() }.buttonStyle(PaperButtonStyle(filled: true)).accessibilityIdentifier("levels")
             } else {
                 Button { game.advance() } label: {

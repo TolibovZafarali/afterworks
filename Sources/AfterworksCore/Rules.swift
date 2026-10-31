@@ -111,7 +111,10 @@ public enum Rules {
     }
 
     public static func evaluate(_ state: GameState) -> Evaluation {
-        let board = state.board
+        evaluate(board: state.board, order: state.level.order, revision: state.revision)
+    }
+
+    public static func evaluate(board: Board, order: Resources, revision: Int = 0) -> Evaluation {
         let roadRoutes = routes(on: board)
         let connectedReservoirs = Board.positions.filter { position in
             board[position].building == .reservoir &&
@@ -152,7 +155,7 @@ public enum Rules {
             return ProducerResult(position: position, piece: piece, connected: connected, valid: valid,
                                   resource: definition.resource, amount: amount, route: route, reason: reason)
         }
-        return Evaluation(totals: totals, producers: producers, meetsOrder: totals.meets(state.level.order), revision: state.revision)
+        return Evaluation(totals: totals, producers: producers, meetsOrder: totals.meets(order), revision: revision)
     }
 
 }

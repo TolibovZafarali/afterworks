@@ -131,7 +131,7 @@ public struct Campaign: Codable, Equatable, Sendable {
         guard current.canAdvance, current.evaluation == Rules.evaluate(current), record(for: current.levelIndex) != nil else {
             throw GameError("Complete this order with Dispatch before opening the next level.")
         }
-        guard current.levelIndex + 1 < Balance.levels.count else { throw GameError("All twelve levels are complete. Replay any island to improve its stars.") }
+        guard current.levelIndex + 1 < Balance.levels.count else { throw GameError("All \(Balance.levels.count) levels are complete. Replay any island to improve its stars.") }
         try startLevel(current.levelIndex + 1)
     }
 

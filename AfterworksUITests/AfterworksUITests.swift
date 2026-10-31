@@ -13,15 +13,16 @@ final class AfterworksUITests: XCTestCase {
         if !app.buttons["level-1"].waitForExistence(timeout: 15) {
             XCTFail("Level one was not exposed as a map button.\n\(app.debugDescription)")
         }
-        XCTAssertFalse(app.buttons["level-2"].isEnabled)
+        assertLevel(2, isUnlocked: false)
         openLevel(0)
     }
 
-    func testCompleteTwelveLevelsThroughRealTouches() {
+    func testFirstTwelveLevelsThroughRealTouches() {
         executionTimeAllowance = 600
-        for index in Balance.levels.indices {
+        let introduction = Array(Balance.levels.indices.prefix(12))
+        for index in introduction {
             let level = Balance.levels[index]
-            XCTAssertEqual(element("level-number").label, "Level \(index + 1) of 12")
+            XCTAssertEqual(element("level-number").label, "Level \(index + 1) of \(Balance.levels.count)")
             assertCoins(level.budget)
             XCTAssertFalse(app.buttons["undo"].isEnabled)
             play(SolutionFixture.primary[index])
@@ -29,7 +30,7 @@ final class AfterworksUITests: XCTestCase {
             if [0, 4, 7, 11].contains(index) { capture("\(String(format: "%02d", index + 1))-level-\(index + 1)-plan") }
             dispatchAndAssertStars(3)
             if [0, 11].contains(index) { capture("\(String(format: "%02d", index + 1))-level-\(index + 1)-three-stars") }
-            if index < Balance.levels.count - 1 {
+            if index != introduction.last {
                 let next = app.buttons["next-level"]
                 revealVertically(next)
                 next.tap()
@@ -38,12 +39,61 @@ final class AfterworksUITests: XCTestCase {
         }
         resultToMap()
         assertTotalStars(36)
-        for index in Balance.levels.indices {
-            let button = app.buttons["level-\(index + 1)"]
-            revealVertically(button)
-            XCTAssertTrue(button.isEnabled)
+        for index in 0...12 {
+            assertLevel(index + 1, isUnlocked: true)
         }
-        capture("13-campaign-complete-36-stars")
+        assertLevel(14, isUnlocked: false)
+        XCTAssertEqual(element("chapter-stars").label, "6 of 30 stars in this chapter")
+        capture("13-first-twelve-complete-36-of-300-stars")
+        assertLevel(Balance.levels.count, isUnlocked: false)
+        XCTAssertEqual(element("chapter-stars").label, "0 of 30 stars in this chapter")
+        capture("21-final-chapter-locked")
+        let previous = app.buttons["previous-chapter"]
+        revealVertically(previous, scrollID: "level-map-scroll")
+        XCTAssertFalse(app.buttons["next-chapter"].isEnabled)
+        previous.tap()
+        assertChapter(8)
+        app.buttons["next-chapter"].tap()
+        assertChapter(9)
+    }
+
+    func testRepresentativeLaterLevelsThroughRealTouchesWithPreparedProgress() {
+        executionTimeAllowance = 600
+        for number in [13, 25, 50, 75, 100] {
+            let index = number - 1
+            app.terminate()
+            app.launchArguments = ["--uitesting", "--reset-progress", "--ui-start-level", String(number)]
+            app.launch()
+            XCTAssertTrue(app.buttons["continue"].waitForExistence(timeout: 15))
+            assertTotalStars(index * 3)
+            assertChapter(index / 10)
+            openLevel(index)
+            assertCoins(Balance.levels[index].budget)
+            XCTAssertFalse(app.buttons["undo"].isEnabled)
+            play(SolutionFixture.primary[index])
+            assertCoins(Balance.levels[index].budget - Balance.levels[index].minimumCoins)
+            capture("\(number)-prepared-progress-level-\(number)-plan")
+            dispatchAndAssertStars(3)
+            capture("\(number)-prepared-progress-level-\(number)-three-stars")
+            if number == Balance.levels.count { XCTAssertFalse(app.buttons["next-level"].exists) }
+            resultToMap()
+            assertTotalStars(number * 3)
+            if number < Balance.levels.count {
+                assertLevel(number + 1, isUnlocked: true)
+                if number + 2 <= Balance.levels.count { assertLevel(number + 2, isUnlocked: false) }
+            } else {
+                XCTAssertEqual(element("chapter-stars").label, "30 of 30 stars in this chapter")
+                capture("100-prepared-progress-complete-map")
+            }
+        }
+        app.terminate()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+        XCTAssertTrue(app.buttons["continue"].waitForExistence(timeout: 15))
+        assertTotalStars(Balance.levels.count * 3)
+        assertChapter((Balance.levels.count - 1) / 10)
+        app.buttons["continue"].tap()
+        assertResultStars(3)
     }
 
     func testDirectDepotContactInvalidPlacementRefundAndUndo() throws {
@@ -76,7 +126,7 @@ final class AfterworksUITests: XCTestCase {
         XCTAssertFalse(app.buttons["undo"].isEnabled)
         goToMap()
         assertTotalStars(0)
-        XCTAssertFalse(app.buttons["level-2"].isEnabled)
+        assertLevel(2, isUnlocked: false)
     }
 
     func testStarTiersReplayAndBestResultPersistence() throws {
@@ -103,9 +153,9 @@ final class AfterworksUITests: XCTestCase {
         capture("15-replayed-to-three-stars")
         resultToMap()
         assertTotalStars(earlierStars + 3)
-        XCTAssertTrue(app.buttons["level-\(scoring.index + 2)"].isEnabled)
+        assertLevel(scoring.index + 2, isUnlocked: true)
         let replay = app.buttons["level-\(scoring.index + 1)"]
-        revealVertically(replay)
+        revealVertically(replay, scrollID: "level-map-scroll")
         replay.tap()
         assertResultStars(3)
         retryResult(scoring.index)
@@ -119,7 +169,7 @@ final class AfterworksUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["continue"].waitForExistence(timeout: 10))
         assertTotalStars(earlierStars + 3)
-        XCTAssertTrue(app.buttons["level-\(scoring.index + 2)"].isEnabled)
+        assertLevel(scoring.index + 2, isUnlocked: true)
     }
 
     func testPieceDragRoadStrokeRestartAndIndependentNextLevel() throws {
@@ -161,8 +211,8 @@ final class AfterworksUITests: XCTestCase {
         XCTAssertFalse(app.buttons["undo"].isEnabled)
         goToMap()
         assertTotalStars(3)
-        XCTAssertTrue(app.buttons["level-2"].isEnabled)
-        XCTAssertFalse(app.buttons["level-3"].isEnabled)
+        assertLevel(2, isUnlocked: true)
+        assertLevel(3, isUnlocked: false)
         capture("16-restart-preserves-unlocked-levels")
     }
 
@@ -197,7 +247,7 @@ final class AfterworksUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["continue"].waitForExistence(timeout: 10))
         assertTotalStars(3)
-        XCTAssertTrue(app.buttons["level-2"].isEnabled)
+        assertLevel(2, isUnlocked: true)
         app.buttons["continue"].tap()
         if !element("level-complete").waitForExistence(timeout: 2) { app.buttons["dispatch"].tap() }
         assertResultStars(3)
@@ -210,7 +260,7 @@ final class AfterworksUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["continue"].waitForExistence(timeout: 10))
         assertTotalStars(3)
-        XCTAssertFalse(app.buttons["level-3"].isEnabled)
+        assertLevel(3, isUnlocked: false)
         app.buttons["continue"].tap()
         waitForLevel(1)
         assertCoins(Balance.levels[1].budget)
@@ -269,7 +319,7 @@ final class AfterworksUITests: XCTestCase {
     private func assertTotalStars(_ expected: Int, file: StaticString = #filePath, line: UInt = #line) {
         let total = element("total-stars")
         XCTAssertTrue(total.waitForExistence(timeout: 5), file: file, line: line)
-        XCTAssertEqual(total.label, "\(expected) of 36 stars", file: file, line: line)
+        XCTAssertEqual(total.label, "\(expected) of \(Balance.levels.count * 3) stars", file: file, line: line)
     }
 
     private func assertResultStars(_ stars: Int, file: StaticString = #filePath, line: UInt = #line) {
@@ -284,14 +334,15 @@ final class AfterworksUITests: XCTestCase {
     }
 
     private func openLevel(_ index: Int) {
+        chooseChapter(forLevel: index)
         let button = app.buttons["level-\(index + 1)"]
-        revealVertically(button)
+        revealVertically(button, scrollID: "level-map-scroll")
         button.tap()
         waitForLevel(index)
     }
 
     private func waitForLevel(_ index: Int) {
-        let predicate = NSPredicate(format: "label == %@", "Level \(index + 1) of 12")
+        let predicate = NSPredicate(format: "label == %@", "Level \(index + 1) of \(Balance.levels.count)")
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element("level-number"))
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
         waitUntilEnabled(app.buttons["dispatch"])
@@ -301,7 +352,36 @@ final class AfterworksUITests: XCTestCase {
         let levels = app.buttons["levels"]
         revealVertically(levels)
         levels.tap()
-        XCTAssertTrue(app.buttons["level-1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chapter-picker"].waitForExistence(timeout: 5))
+    }
+
+    private func assertChapter(_ index: Int) {
+        let count = (Balance.levels.count + 9) / 10
+        let predicate = NSPredicate(format: "label == %@", "Chapter \(index + 1) of \(count)")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element("chapter-title"))
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 5), .completed)
+    }
+
+    private func chooseChapter(forLevel index: Int) {
+        let chapter = index / 10
+        let expected = "Chapter \(chapter + 1) of \((Balance.levels.count + 9) / 10)"
+        if element("chapter-title").exists && element("chapter-title").label == expected { return }
+        let picker = app.buttons["chapter-picker"]
+        revealVertically(picker, scrollID: "level-map-scroll")
+        picker.tap()
+        let choice = app.buttons["chapter-\(chapter + 1)"]
+        XCTAssertTrue(choice.waitForExistence(timeout: 5))
+        choice.tap()
+        assertChapter(chapter)
+    }
+
+    private func assertLevel(_ number: Int, isUnlocked expected: Bool,
+                             file: StaticString = #filePath, line: UInt = #line) {
+        chooseChapter(forLevel: number - 1)
+        let button = app.buttons["level-\(number)"]
+        revealVertically(button, scrollID: "level-map-scroll", verifyHittable: false)
+        XCTAssertTrue(button.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertEqual(button.isEnabled, expected, "Level \(number) unlock state", file: file, line: line)
     }
 
     private func goToMap() {
@@ -337,8 +417,9 @@ final class AfterworksUITests: XCTestCase {
     }
 
     private func revealInTray(_ control: XCUIElement) {
+        let tray = app.scrollViews["building-tray-scroll"]
+        XCTAssertTrue(tray.waitForExistence(timeout: 5))
         for _ in 0..<8 {
-            let tray = scrollingContainer(for: control)
             let viewport = tray.frame.intersection(app.frame)
             if control.exists {
                 let frame = control.frame
@@ -396,9 +477,13 @@ final class AfterworksUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed, file: file, line: line)
     }
 
-    private func revealVertically(_ control: XCUIElement) {
+    private func revealVertically(_ control: XCUIElement, scrollID: String = "game-sheet-scroll",
+                                  verifyHittable: Bool = true) {
+        let scrollView = app.scrollViews[scrollID]
+        if !scrollView.waitForExistence(timeout: 5) {
+            XCTFail("The expected scrolling surface \(scrollID) did not appear.\n\(app.debugDescription)")
+        }
         for _ in 0..<8 {
-            let scrollView = scrollingContainer(for: control)
             let viewport = scrollView.frame.intersection(app.frame)
             if control.exists {
                 let frame = control.frame
@@ -406,7 +491,7 @@ final class AfterworksUITests: XCTestCase {
                 if frame.width > 0, frame.height > 0,
                    frame.minY >= viewport.minY, frame.maxY <= viewport.maxY,
                    viewport.contains(center) {
-                    XCTAssertTrue(control.isHittable, "Visible control must be reachable")
+                    if verifyHittable { XCTAssertTrue(control.isHittable, "Visible control must be reachable") }
                     return
                 }
                 if frame.midY < viewport.midY { scrollView.swipeDown(); continue }
@@ -414,14 +499,6 @@ final class AfterworksUITests: XCTestCase {
             scrollView.swipeUp()
         }
         XCTFail("Control \(control.identifier) did not scroll into its visible viewport")
-    }
-
-    private func scrollingContainer(for control: XCUIElement) -> XCUIElement {
-        if control.exists {
-            let container = app.scrollViews.containing(.any, identifier: control.identifier).firstMatch
-            if container.exists { return container }
-        }
-        return app.scrollViews.allElementsBoundByIndex.last ?? app.scrollViews.firstMatch
     }
 
     private func capture(_ name: String) {
